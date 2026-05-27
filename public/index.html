@@ -1,0 +1,1334 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta name="theme-color" content="#565A5C">
+  <title>Komfort - Expenses System</title>
+  <link rel="manifest" href="/manifest.json">
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    :root {
+      --primary: #404042; --primary-light: #565A5C; --accent: #FDC82F;
+      --success: #2e7d32; --warning: #ef6c00; --danger: #c62828; --info: #1565c0;
+      --bg: #F4F6F7; --card: #ffffff; --text: #404042; --text-light: #757677;
+      --border: #dfe2e4; --shadow: 0 2px 8px rgba(64,64,66,0.12); --sidebar-w: 246px;
+    }
+    body { font-family: Helvetica, Arial, sans-serif; background: var(--bg); color: var(--text); min-height: 100vh; }
+    h1,h2,h3,h4,h5,h6 { color: var(--primary); font-weight: 700; }
+    a { color: var(--info); }
+    .hidden { display: none !important; }
+
+    .btn { display: inline-flex; align-items: center; justify-content: center; padding: 10px 18px; border: none; border-radius: 8px; font-size: 0.95rem; font-weight: 500; cursor: pointer; transition: all .2s; text-decoration: none; gap: 8px; }
+    .btn-primary { background: var(--primary-light); color: var(--accent); }
+    .btn-primary:hover { background: var(--primary); }
+    .btn-accent { background: var(--accent); color: var(--primary); }
+    .btn-accent:hover { filter: brightness(.95); }
+    .btn-success { background: var(--success); color: #fff; }
+    .btn-danger { background: var(--danger); color: #fff; }
+    .btn-warning { background: var(--warning); color: #fff; }
+    .btn-info { background: var(--info); color: #fff; }
+    .btn-outline { background: transparent; border: 2px solid var(--primary); color: var(--primary); }
+    .btn-outline:hover { background: var(--primary); color: var(--accent); }
+    .btn-sm { padding: 6px 12px; font-size: 0.825rem; }
+    .btn:disabled { opacity: .5; cursor: not-allowed; }
+
+    .form-group { margin-bottom: 14px; }
+    .form-group label { display: block; font-weight: 600; margin-bottom: 5px; color: var(--text); font-size: 0.875rem; }
+    .form-group input, .form-group select, .form-group textarea {
+      width: 100%; padding: 10px; border: 2px solid var(--border); border-radius: 8px; font-size: 0.95rem; background: #fff; font-family: inherit;
+    }
+    .form-group input:focus, .form-group select:focus, .form-group textarea:focus { border-color: var(--primary); outline: none; }
+    .form-row { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; }
+    .form-row-3 { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 14px; }
+    @media (max-width:600px){ .form-row, .form-row-3 { grid-template-columns: 1fr; } }
+    .req::after { content: " *"; color: var(--danger); }
+    fieldset { border: 1px solid var(--border); border-radius: 10px; padding: 16px; margin-bottom: 16px; }
+    legend { padding: 0 8px; font-weight: 700; color: var(--primary); font-size: 0.95rem; }
+
+    .card { background: var(--card); border-radius: 12px; box-shadow: var(--shadow); padding: 20px; margin-bottom: 16px; }
+    .card-head { display: flex; align-items: center; justify-content: space-between; margin-bottom: 14px; flex-wrap: wrap; gap: 10px; }
+    .muted { color: var(--text-light); }
+    .small { font-size: 0.85rem; }
+
+    .stat-grid { display: grid; grid-template-columns: repeat(auto-fit,minmax(170px,1fr)); gap: 16px; margin-bottom: 16px; }
+    .stat { background: var(--card); border-radius: 12px; box-shadow: var(--shadow); padding: 18px; border-left: 5px solid var(--accent); position: relative; }
+    .stat .num { font-size: 1.9rem; font-weight: 700; color: var(--primary); }
+    .stat.clickable { cursor: pointer; transition: transform .15s, box-shadow .15s; }
+    .stat.clickable:hover { transform: translateY(-2px); box-shadow: 0 8px 20px rgba(64,64,66,0.18); }
+    .stat.clickable::after { content: "›"; position: absolute; top: 12px; right: 14px; color: var(--text-light); font-size: 1.2rem; opacity: .5; }
+    .stat .lbl { color: var(--text-light); font-size: 0.85rem; margin-top: 2px; }
+    .stat.warn { border-left-color: var(--warning); }
+    .stat.ok { border-left-color: var(--success); }
+    .stat.info { border-left-color: var(--info); }
+
+    .table-wrap { overflow-x: auto; }
+    table { width: 100%; border-collapse: collapse; }
+    th, td { padding: 10px 12px; text-align: left; border-bottom: 1px solid var(--border); font-size: 0.9rem; vertical-align: middle; }
+    th { background: var(--bg); font-weight: 700; color: var(--primary); white-space: nowrap; }
+    tbody tr:hover { background: #fafbfc; }
+    td.num, th.num { text-align: right; white-space: nowrap; }
+    .clickable { cursor: pointer; }
+
+    .badge { display: inline-block; padding: 3px 10px; border-radius: 12px; font-size: 0.72rem; font-weight: 700; text-transform: uppercase; letter-spacing: .3px; }
+    .b-green { background: #e3f3e4; color: var(--success); }
+    .b-red { background: #fde8e8; color: var(--danger); }
+    .b-amber { background: #fff3e0; color: var(--warning); }
+    .b-grey { background: #e9ecef; color: var(--text-light); }
+    .b-blue { background: #e3f0fb; color: var(--info); }
+    .b-yellow { background: var(--accent); color: var(--primary); }
+
+    #login-view { min-height: 100vh; display: flex; align-items: center; justify-content: center; background: linear-gradient(135deg,#404042,#565A5C); padding: 20px; }
+    .login-card { background: #fff; border-radius: 16px; box-shadow: 0 10px 40px rgba(0,0,0,.3); padding: 36px; width: 100%; max-width: 410px; border-top: 6px solid var(--accent); }
+    .login-sub { text-align: center; color: var(--text-light); margin-bottom: 24px; font-weight:600; letter-spacing:.5px; }
+    .login-hint { margin-top: 18px; font-size: 0.78rem; color: var(--text-light); background: var(--bg); border-radius: 8px; padding: 10px 12px; line-height:1.7; }
+
+    #app { display: none; min-height: 100vh; }
+    #app.active { display: flex; }
+    .sidebar { width: var(--sidebar-w); background: var(--primary); color: #fff; display: flex; flex-direction: column; position: fixed; top: 0; bottom: 0; left: 0; z-index: 50; transition: transform .25s; }
+    .sidebar .brand { padding: 20px; border-bottom: 1px solid rgba(255,255,255,.1); }
+    .sidebar .brand .sub { font-size: 0.75rem; color: rgba(255,255,255,.6); }
+    .nav { flex: 1; overflow-y: auto; padding: 8px 0; }
+    .nav-section { font-size:.68rem; text-transform:uppercase; letter-spacing:.8px; color:rgba(255,255,255,.4); padding:14px 20px 4px; }
+    .nav-item { display: flex; align-items: center; gap: 12px; padding: 11px 20px; color: rgba(255,255,255,.82); cursor: pointer; font-size: 0.9rem; border-left: 4px solid transparent; }
+    .nav-item:hover { background: rgba(255,255,255,.06); color: #fff; }
+    .nav-item.active { background: rgba(253,200,47,.14); color: var(--accent); border-left-color: var(--accent); font-weight: 600; }
+    .nav-item .ic { width: 20px; text-align: center; }
+    .nav-badge { margin-left: auto; background: var(--accent); color: var(--primary); border-radius: 10px; padding: 1px 8px; font-size: 0.72rem; font-weight: 700; }
+    .sidebar .who { padding: 14px 20px; border-top: 1px solid rgba(255,255,255,.1); font-size: 0.82rem; }
+    .sidebar .who .name { color: #fff; font-weight: 600; }
+    .sidebar .who .role { color: rgba(255,255,255,.55); font-size:.74rem; }
+
+    .main { flex: 1; margin-left: var(--sidebar-w); display: flex; flex-direction: column; min-height: 100vh; }
+    .topbar { background: var(--primary-light); color: var(--accent); padding: 14px 22px; display: flex; align-items: center; justify-content: space-between; box-shadow: var(--shadow); position: sticky; top: 0; z-index: 40; border-bottom: 4px solid var(--accent); }
+    .topbar h1 { color: var(--accent); font-size: 1.2rem; }
+    .topbar .ta { display: flex; gap: 8px; align-items: center; flex-wrap:wrap; justify-content:flex-end; }
+    .hamburger { display: none; background: none; border: none; color: var(--accent); font-size: 1.5rem; cursor: pointer; }
+    .content { padding: 22px; flex: 1; }
+
+    .tabs { display: flex; gap: 4px; border-bottom: 2px solid var(--border); margin-bottom: 18px; flex-wrap: wrap; }
+    .tab { padding: 10px 16px; cursor: pointer; font-weight: 600; color: var(--text-light); border-bottom: 3px solid transparent; margin-bottom: -2px; font-size: 0.9rem; }
+    .tab.active { color: var(--primary); border-bottom-color: var(--accent); }
+    .tab .cnt { background:var(--border); color:var(--text-light); border-radius:10px; padding:0 7px; font-size:.72rem; margin-left:6px; }
+    .tab.active .cnt { background:var(--accent); color:var(--primary); }
+
+    .toolbar { display: flex; gap: 10px; flex-wrap: wrap; align-items: center; margin-bottom: 16px; }
+    .toolbar input, .toolbar select { padding: 9px 12px; border: 2px solid var(--border); border-radius: 8px; font-size: 0.9rem; background: #fff; }
+    .toolbar .grow { flex: 1; min-width: 180px; }
+
+    .modal-overlay { display: none; position: fixed; inset: 0; background: rgba(0,0,0,.5); z-index: 1000; align-items: flex-start; justify-content: center; padding: 30px 16px; overflow-y: auto; }
+    .modal-overlay.active { display: flex; }
+    .modal { background: #fff; border-radius: 14px; padding: 24px; max-width: 640px; width: 100%; margin: auto; }
+    .modal.wide { max-width: 900px; }
+    .modal h2 { margin-bottom: 4px; }
+    .modal .modal-sub { color: var(--text-light); margin-bottom: 16px; font-size: 0.9rem; }
+    .modal-actions { display: flex; gap: 10px; justify-content: flex-end; margin-top: 18px; flex-wrap: wrap; }
+
+    .toast-container { position: fixed; bottom: 20px; right: 20px; z-index: 2000; }
+    .toast { padding: 12px 18px; border-radius: 8px; color: #fff; margin-top: 8px; font-weight: 500; box-shadow: var(--shadow); animation: slideIn .3s; max-width:340px; }
+    .toast-success { background: var(--success); } .toast-error { background: var(--danger); } .toast-info { background: var(--info); }
+    @keyframes slideIn { from { transform: translateX(110%);} to { transform: translateX(0);} }
+
+    .empty { text-align: center; color: var(--text-light); padding: 40px 20px; }
+    .empty .ic { font-size: 2.5rem; display: block; margin-bottom: 8px; opacity: .5; }
+
+    .kv { display: grid; grid-template-columns: 200px 1fr; gap: 8px 16px; }
+    .kv dt { font-weight: 600; color: var(--text-light); font-size: 0.85rem; }
+    .kv dd { font-size: 0.95rem; }
+    @media (max-width: 600px){ .kv { grid-template-columns: 1fr; gap: 2px 0; } .kv dd { margin-bottom: 8px; } }
+
+    /* roles chips */
+    .chips { display:flex; gap:6px; flex-wrap:wrap; }
+    .chip { background:var(--bg); border:1px solid var(--border); border-radius:14px; padding:2px 10px; font-size:.72rem; font-weight:600; color:var(--text-light); }
+    .chip.on { background:var(--accent); color:var(--primary); border-color:var(--accent); }
+    label.chk { display:flex; align-items:center; gap:8px; font-weight:600; font-size:.9rem; padding:8px 10px; border:2px solid var(--border); border-radius:8px; cursor:pointer; }
+    label.chk input { width:auto; }
+
+    /* segmented */
+    .seg { display:inline-flex; border:2px solid var(--border); border-radius:8px; overflow:hidden; }
+    .seg button { border:none; background:#fff; padding:9px 16px; cursor:pointer; font-weight:600; color:var(--text-light); font-size:.9rem; }
+    .seg button.on { background:var(--primary); color:var(--accent); }
+
+    /* receipts */
+    .receipts { display:flex; gap:10px; flex-wrap:wrap; margin-top:8px; }
+    .receipt-thumb { width:74px; height:74px; border:1px solid var(--border); border-radius:8px; overflow:hidden; position:relative; background:var(--bg); display:flex; align-items:center; justify-content:center; cursor:pointer; }
+    .receipt-thumb img { width:100%; height:100%; object-fit:cover; }
+    .receipt-thumb .doc { font-size:1.8rem; }
+    .receipt-thumb .rm { position:absolute; top:-7px; right:-7px; background:var(--danger); color:#fff; border-radius:50%; width:20px; height:20px; border:none; cursor:pointer; font-size:.8rem; line-height:1; }
+    .scan-box { background:#fff8e1; border:1px dashed var(--accent); border-radius:8px; padding:10px 12px; font-size:.82rem; margin-top:8px; }
+
+    .totbar { display:flex; gap:20px; flex-wrap:wrap; background:var(--primary); color:#fff; border-radius:10px; padding:14px 18px; margin-bottom:16px; }
+    .totbar .t .v { font-size:1.4rem; font-weight:700; color:var(--accent); }
+    .totbar .t .l { font-size:.75rem; color:rgba(255,255,255,.7); }
+
+    .trail { border-left:3px solid var(--border); padding-left:14px; margin:6px 0; }
+    .trail .step { font-size:.85rem; margin-bottom:8px; position:relative; }
+    .trail .step::before { content:''; position:absolute; left:-21px; top:3px; width:11px; height:11px; border-radius:50%; background:var(--border); }
+    .trail .step.done::before { background:var(--success); }
+    .trail .step.cur::before { background:var(--accent); }
+
+    @media (max-width: 900px){
+      .sidebar { transform: translateX(-100%); }
+      .sidebar.open { transform: translateX(0); }
+      .main { margin-left: 0; }
+      .hamburger { display: block; }
+    }
+  </style>
+</head>
+<body>
+
+<!-- ═══════════════ LOGIN ═══════════════ -->
+<div id="login-view">
+  <div class="login-card">
+    <div style="text-align:center"><img src="/logo.svg" alt="Komfort" style="height:64px;margin-bottom:8px;"></div>
+    <div class="login-sub">EXPENSES SYSTEM</div>
+    <form id="login-form" onsubmit="handleLogin(event)">
+      <div class="form-group">
+        <label>Username</label>
+        <input id="login-username" autocomplete="username" required autofocus>
+      </div>
+      <div class="form-group">
+        <label>Password</label>
+        <input id="login-password" type="password" autocomplete="current-password" required>
+      </div>
+      <button class="btn btn-primary" style="width:100%" type="submit">Sign in</button>
+    </form>
+    <div class="login-hint">
+      <strong>Demo accounts</strong><br>
+      Finance (all roles) — <code>finance</code> / <code>admin123</code><br>
+      Manager — <code>manager</code> / <code>manager123</code><br>
+      Employee — <code>employee</code> / <code>employee123</code><br>
+      Credit-card user — <code>ccuser</code> / <code>ccuser123</code>
+    </div>
+  </div>
+</div>
+
+<!-- ═══════════════ APP SHELL ═══════════════ -->
+<div id="app">
+  <aside class="sidebar" id="sidebar">
+    <div class="brand">
+      <img src="/logo-light.svg" alt="Komfort" style="height:34px;display:block;margin-bottom:4px;">
+      <div class="sub">Expenses System</div>
+    </div>
+    <nav class="nav" id="nav"></nav>
+    <div class="who">
+      <div class="name" id="who-name"></div>
+      <div class="role" id="who-role"></div>
+      <button class="btn btn-outline btn-sm" style="margin-top:10px;width:100%;border-color:rgba(255,255,255,.4);color:#fff" onclick="logout()">Sign out</button>
+    </div>
+  </aside>
+  <div class="main">
+    <div class="topbar">
+      <div style="display:flex;align-items:center;gap:12px">
+        <button class="hamburger" onclick="toggleSidebar()">&#9776;</button>
+        <h1 id="page-title">Dashboard</h1>
+      </div>
+      <div class="ta" id="topbar-actions"></div>
+    </div>
+    <div class="content" id="content"></div>
+  </div>
+</div>
+
+<div class="modal-overlay" id="modal-overlay"><div class="modal" id="modal"></div></div>
+<div class="toast-container" id="toast-container"></div>
+
+<script>
+// ═══════════════════════════════════════════════════════════════
+// DATA LAYER — IndexedDB (offline/local persistence). Mirrors
+// database.js so it can move to the Node backend unchanged.
+// ═══════════════════════════════════════════════════════════════
+const DB_NAME = 'KomfortExpenses';
+const DB_VERSION = 1;
+const STORES = ['users','categories','departments','vehicle_types','mileage_rates','suppliers','vat_rates','reports','lines','payment_runs','settings','audit_log'];
+let db = null;
+
+function openDB(){
+  return new Promise((resolve,reject)=>{
+    const req = indexedDB.open(DB_NAME, DB_VERSION);
+    req.onupgradeneeded = e => {
+      const d = e.target.result;
+      const simple = ['categories','departments','vehicle_types','mileage_rates','suppliers','vat_rates','payment_runs'];
+      simple.forEach(s => { if(!d.objectStoreNames.contains(s)) d.createObjectStore(s,{keyPath:'id'}); });
+      if(!d.objectStoreNames.contains('users')){ const s=d.createObjectStore('users',{keyPath:'id'}); s.createIndex('username','username',{unique:true}); }
+      if(!d.objectStoreNames.contains('reports')){ const s=d.createObjectStore('reports',{keyPath:'id'}); s.createIndex('user_id','user_id'); s.createIndex('status','status'); }
+      if(!d.objectStoreNames.contains('lines')){ const s=d.createObjectStore('lines',{keyPath:'id'}); s.createIndex('report_id','report_id'); }
+      if(!d.objectStoreNames.contains('settings')) d.createObjectStore('settings',{keyPath:'key'});
+      if(!d.objectStoreNames.contains('audit_log')){ const s=d.createObjectStore('audit_log',{keyPath:'id',autoIncrement:true}); s.createIndex('timestamp','timestamp'); }
+    };
+    req.onsuccess = e => { db = e.target.result; resolve(db); };
+    req.onerror = e => reject(e.target.error);
+  });
+}
+const tx = (s,m='readonly') => db.transaction(s,m).objectStore(s);
+function idbGetAll(s){ return new Promise((res,rej)=>{ const r=tx(s).getAll(); r.onsuccess=()=>res(r.result); r.onerror=e=>rej(e.target.error); }); }
+function idbGet(s,k){ return new Promise((res,rej)=>{ const r=tx(s).get(k); r.onsuccess=()=>res(r.result); r.onerror=e=>rej(e.target.error); }); }
+function idbPut(s,v){ return new Promise((res,rej)=>{ const r=tx(s,'readwrite').put(v); r.onsuccess=()=>res(r.result); r.onerror=e=>rej(e.target.error); }); }
+function idbDelete(s,k){ return new Promise((res,rej)=>{ const r=tx(s,'readwrite').delete(k); r.onsuccess=()=>res(); r.onerror=e=>rej(e.target.error); }); }
+function idbByIndex(s,idx,val){ return new Promise((res,rej)=>{ const r=tx(s).index(idx).getAll(val); r.onsuccess=()=>res(r.result); r.onerror=e=>rej(e.target.error); }); }
+
+function uuid(){ return crypto.randomUUID ? crypto.randomUUID() : 'xxxxxxxx-xxxx-4xxx'.replace(/x/g,()=>Math.floor(Math.random()*16).toString(16)); }
+function nowISO(){ return new Date().toISOString(); }
+function today(){ return new Date().toISOString().slice(0,10); }
+async function sha256(str){ const buf = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(str)); return Array.from(new Uint8Array(buf)).map(b=>b.toString(16).padStart(2,'0')).join(''); }
+async function logAction(action, details={}){ try{ await idbPut('audit_log',{ id:undefined, timestamp:nowISO(), user:state.user?.username||'system', action, ...details }); }catch(e){} }
+async function getSetting(k,f){ const r=await idbGet('settings',k); return r?r.value:f; }
+async function setSetting(k,v){ return idbPut('settings',{key:k,value:v}); }
+
+// ═══════════════════════════════════════════════
+// CONSTANTS
+// ═══════════════════════════════════════════════
+const ROLES = [
+  {key:'employee', label:'Employee'},
+  {key:'manager', label:'Manager'},
+  {key:'finance', label:'Finance'},
+  {key:'credit_card', label:'Credit Card User'},
+];
+const COMPANY = 'Komfort Partitioning Ltd';
+function optionList(opts, current, useEmpty){
+  let html = useEmpty ? '<option value="">— Select —</option>' : '';
+  return html + opts.map(o=>`<option value="${esc(o.value)}" ${current===o.value?'selected':''}>${esc(o.label)}</option>`).join('');
+}
+
+// ═══════════════════════════════════════════════
+// SEED DATA
+// ═══════════════════════════════════════════════
+async function seedDefaults(){
+  const users = await idbGetAll('users');
+  if (users.length > 0) return;
+  await setSetting('company_name', COMPANY);
+
+  const mk = (arr, store, fields) => arr.map(a=>{ const o={id:uuid(),active:1}; fields.forEach((f,i)=>o[f]=a[i]); return o; });
+
+  const vats = mk([['Standard 20%',20],['Reduced 5%',5],['Zero 0%',0],['No VAT',0],['Exempt',0]],'vat_rates',['name','percent']);
+  for (const v of vats) await idbPut('vat_rates', v);
+  const vatStd = vats[0].id;
+
+  const cats = mk([['Travel','7400'],['Subsistence','7406'],['Accommodation','7402'],['Fuel','7300'],
+    ['Office Supplies','7500'],['Client Entertaining','8200'],['Mileage','7404'],['Parking & Tolls','7401'],['Sundry','7906']],'categories',['name','nominal_code']);
+  for (const c of cats) await idbPut('categories', c);
+
+  const depts = mk([['Operations','OPS'],['Manufacturing','MFG'],['Sales','SAL'],['Finance','FIN'],
+    ['Installation','INS'],['Design','DSN'],['Management','MGT']],'departments',['name','dept_code']);
+  for (const d of depts) await idbPut('departments', d);
+
+  const vts = mk([['Car - Petrol'],['Car - Diesel'],['Car - Electric'],['Van'],['Motorcycle']],'vehicle_types',['name']);
+  for (const v of vts) await idbPut('vehicle_types', v);
+
+  // Mileage rates: payment rate (AMAP) + advisory fuel rate (for VAT reclaim), linked to a VAT rate
+  const rates = [
+    ['HMRC Car (first 10,000 miles)','Car - Petrol',45,13],
+    ['HMRC Car (first 10,000 miles)','Car - Diesel',45,12],
+    ['HMRC Car EV (first 10,000 miles)','Car - Electric',45,8],
+    ['HMRC Car (over 10,000 miles)','Car - Petrol',25,13],
+    ['HMRC Car (over 10,000 miles)','Car - Diesel',25,12],
+    ['HMRC Motorcycle',null,24,0],
+  ];
+  for (const [name,vt,rate,afr] of rates) await idbPut('mileage_rates',{ id:uuid(), name, vehicle_type:vt, rate_pence:rate, afr_pence:afr, vat_rate_id:vatStd, effective_from:'2024-09-01', active:1 });
+
+  const sups = ['Shell','BP','Esso','Premier Inn','Travelodge','Greggs','Costa Coffee','Screwfix','Toolstation','National Rail'];
+  for (const s of sups) await idbPut('suppliers',{ id:uuid(), name:s, active:1, created_by:'system', created_at:nowISO() });
+
+  // Users with role combinations + approval chain
+  const financeId = uuid(), managerId = uuid(), empId = uuid(), ccId = uuid();
+  const u = async (id,username,pwd,full,email,roles,dept,a1,a2)=> idbPut('users',{
+    id, username, password_hash: await sha256(pwd), full_name:full, email,
+    roles, department_id:dept, approver1_id:a1||null, approver2_id:a2||null,
+    active:1, must_change_password:false, created_at:nowISO()
+  });
+  const finDept = depts.find(d=>d.name==='Finance').id;
+  const opsDept = depts.find(d=>d.name==='Operations').id;
+  const salDept = depts.find(d=>d.name==='Sales').id;
+  await u(financeId,'finance','admin123','Helen Foster','h.foster@komfort.com',['employee','manager','finance','credit_card'],finDept,null,null);
+  await u(managerId,'manager','manager123','Sarah Mitchell','s.mitchell@komfort.com',['employee','manager','credit_card'],opsDept,null,financeId);
+  await u(empId,'employee','employee123','James Okafor','j.okafor@komfort.com',['employee'],opsDept,managerId,financeId);
+  await u(ccId,'ccuser','ccuser123','Priya Sharma','p.sharma@komfort.com',['employee','credit_card'],salDept,managerId,financeId);
+
+  // Sample report with one expense + one mileage line (unsubmitted, owned by employee)
+  const rptId = uuid();
+  await idbPut('reports',{ id:rptId, user_id:empId, type:'expense', title:'May Expenses', status:'unsubmitted',
+    submitted_at:null, manager_approved_by:null, manager_approved_at:null, finance_approved_by:null, finance_approved_at:null,
+    reimbursed_at:null, payment_run_id:null, rejected_by:null, rejected_at:null, rejection_note:null, notes:'', created_at:nowISO() });
+  const travelCat = cats.find(c=>c.name==='Subsistence').id;
+  const shell = (await idbGetAll('suppliers')).find(s=>s.name==='Greggs').id;
+  await idbPut('lines',{ id:uuid(), report_id:rptId, line_type:'expense', line_date:today(), description:'Lunch on site visit',
+    supplier_id:shell, category_id:travelCat, amount:8.40, vat_rate_id:vats[2].id, vat_amount:0,
+    postcode_from:'', postcode_to:'', distance_miles:0, vehicle_type:'', vehicle_reg:'', mileage_rate_id:'', receipts:[], created_at:nowISO() });
+  const carRate = (await idbGetAll('mileage_rates')).find(r=>r.name.includes('first 10,000')&&r.vehicle_type==='Car - Petrol');
+  await idbPut('lines',{ id:uuid(), report_id:rptId, line_type:'mileage', line_date:today(), description:'Leeds office to Crawley site',
+    supplier_id:'', category_id:'', amount:+(48*0.45).toFixed(2), vat_rate_id:carRate.vat_rate_id, vat_amount:+(48*carRate.afr_pence/100*(20/120)).toFixed(2),
+    postcode_from:'LS10 1AB', postcode_to:'RH10 8GH', distance_miles:48, vehicle_type:'Car - Petrol', vehicle_reg:'YK19 ABC',
+    mileage_rate_id:carRate.id, receipts:[], created_at:nowISO() });
+
+  await logAction('seed',{ detail:'Initial demo data created' });
+}
+
+// ═══════════════════════════════════════════════
+// AUTH + STATE
+// ═══════════════════════════════════════════════
+const state = { user:null, page:null, usersById:{}, currentReportId:null };
+
+function hasRole(role, user){ return ((user||state.user)?.roles||[]).includes(role); }
+function isFinance(){ return hasRole('finance'); }
+function isManager(){ return hasRole('manager'); }
+function isCC(){ return hasRole('credit_card'); }
+
+async function handleLogin(e){
+  e.preventDefault();
+  const u = document.getElementById('login-username').value.trim().toLowerCase();
+  const p = document.getElementById('login-password').value;
+  const all = await idbGetAll('users');
+  const user = all.find(x => x.username.toLowerCase() === u);
+  if (!user || !user.active){ toast('Invalid username or password','error'); return; }
+  const hash = await sha256(p);
+  if (hash !== user.password_hash){ toast('Invalid username or password','error'); return; }
+  state.user = user;
+  sessionStorage.setItem('exp_session', user.id);
+  await logAction('login');
+  await enterApp();
+}
+async function enterApp(){
+  document.getElementById('login-view').style.display = 'none';
+  document.getElementById('app').classList.add('active');
+  await refreshCaches();
+  document.getElementById('who-name').textContent = state.user.full_name;
+  document.getElementById('who-role').textContent = state.user.roles.map(r=>ROLES.find(x=>x.key===r)?.label||r).join(' · ');
+  await buildNav();
+  navigate(isFinance() ? 'dashboard' : 'my-expenses');
+}
+function logout(){
+  state.user = null; sessionStorage.removeItem('exp_session');
+  document.getElementById('app').classList.remove('active');
+  document.getElementById('login-view').style.display = 'flex';
+  document.getElementById('login-form').reset();
+}
+async function refreshCaches(){
+  const users = await idbGetAll('users');
+  state.usersById = {}; users.forEach(u => state.usersById[u.id] = u);
+}
+
+// ═══════════════════════════════════════════════
+// NAVIGATION
+// ═══════════════════════════════════════════════
+function navItems(){
+  const items = [];
+  if (isFinance()) items.push({ id:'dashboard', label:'Dashboard', ic:'▦' });
+  items.push({ id:'my-expenses', label:'My Expenses', ic:'£', sec:'Mine' });
+  if (isCC()) items.push({ id:'my-cc', label:'Credit Card', ic:'▭' });
+  if (isManager()) items.push({ id:'approvals', label:'Approvals', ic:'✔', badge:'mgr', sec:'Approve' });
+  if (isFinance()){
+    items.push({ id:'finance-approvals', label:'Finance Approvals', ic:'✔', badge:'fin', sec:'Finance' });
+    items.push({ id:'payment-runs', label:'Payment Runs', ic:'⇄' });
+    items.push({ id:'analytics', label:'Reports', ic:'▣' });
+    items.push({ id:'adm-users', label:'Users', ic:'⚷', sec:'Administration' });
+    items.push({ id:'adm-categories', label:'Categories', ic:'▤' });
+    items.push({ id:'adm-departments', label:'Departments', ic:'▥' });
+    items.push({ id:'adm-vehicles', label:'Vehicle Types', ic:'⛐' });
+    items.push({ id:'adm-mileage', label:'Mileage Rates', ic:'⛽' });
+    items.push({ id:'adm-vat', label:'VAT Rates', ic:'%' });
+    items.push({ id:'adm-suppliers', label:'Suppliers', ic:'☷' });
+  }
+  return items;
+}
+async function buildNav(){
+  const nav = document.getElementById('nav');
+  const items = navItems();
+  const badges = await computeBadges();
+  let html = '', lastSec = null;
+  items.forEach(i => {
+    if (i.sec && i.sec !== lastSec){ html += `<div class="nav-section">${i.sec}</div>`; lastSec = i.sec; }
+    const b = i.badge && badges[i.badge] ? `<span class="nav-badge">${badges[i.badge]}</span>` : '';
+    html += `<div class="nav-item" data-page="${i.id}" onclick="navigate('${i.id}')"><span class="ic">${i.ic}</span><span>${i.label}</span>${b}</div>`;
+  });
+  nav.innerHTML = html;
+  document.querySelectorAll('.nav-item').forEach(n => n.classList.toggle('active', n.dataset.page === state.page));
+}
+async function computeBadges(){
+  const reports = await idbGetAll('reports');
+  let mgr = 0, fin = 0;
+  reports.forEach(r => {
+    if (r.status==='awaiting_manager' && state.usersById[r.user_id]?.approver1_id === state.user.id) mgr++;
+    if (r.status==='awaiting_finance') fin++;
+  });
+  return { mgr, fin };
+}
+const PAGE_TITLES = {
+  dashboard:'Dashboard', 'my-expenses':'My Expense Reports', 'my-cc':'Company Credit Card', approvals:'Approvals',
+  'finance-approvals':'Finance Approvals', 'payment-runs':'Payment Runs', analytics:'Reports',
+  'adm-users':'Users', 'adm-categories':'Categories', 'adm-departments':'Departments', 'adm-vehicles':'Vehicle Types',
+  'adm-mileage':'Mileage Rates', 'adm-vat':'VAT Rates', 'adm-suppliers':'Suppliers'
+};
+async function navigate(page){
+  state.page = page; state.currentReportId = null;
+  document.getElementById('topbar-actions').innerHTML = '';
+  document.getElementById('sidebar').classList.remove('open');
+  document.querySelectorAll('.nav-item').forEach(n => n.classList.toggle('active', n.dataset.page === page));
+  document.getElementById('page-title').textContent = PAGE_TITLES[page] || page;
+  await refreshCaches();
+  const c = document.getElementById('content');
+  c.innerHTML = '<div class="empty">Loading…</div>';
+  try {
+    switch(page){
+      case 'dashboard': await renderDashboard(c); break;
+      case 'my-expenses': await renderReportList(c,'expense'); break;
+      case 'my-cc': await renderReportList(c,'creditcard'); break;
+      case 'approvals': await renderApprovals(c); break;
+      case 'finance-approvals': await renderFinanceApprovals(c); break;
+      case 'payment-runs': await renderPaymentRuns(c); break;
+      case 'analytics': await renderAnalytics(c); break;
+      case 'adm-users': await renderUsers(c); break;
+      case 'adm-categories': await renderRef(c,'categories'); break;
+      case 'adm-departments': await renderRef(c,'departments'); break;
+      case 'adm-vehicles': await renderRef(c,'vehicle_types'); break;
+      case 'adm-mileage': await renderMileageRates(c); break;
+      case 'adm-vat': await renderRef(c,'vat_rates'); break;
+      case 'adm-suppliers': await renderRef(c,'suppliers'); break;
+      default: c.innerHTML = '<div class="empty">Page not found</div>';
+    }
+  } catch(err){ console.error(err); c.innerHTML = `<div class="empty">Error: ${esc(err.message)}</div>`; }
+  await buildNav();
+}
+function toggleSidebar(){ document.getElementById('sidebar').classList.toggle('open'); }
+function setTopbar(html){ document.getElementById('topbar-actions').innerHTML = html; }
+
+// ═══════════════════════════════════════════════
+// UI HELPERS
+// ═══════════════════════════════════════════════
+function toast(msg, type='success'){ const el=document.createElement('div'); el.className=`toast toast-${type}`; el.textContent=msg; document.getElementById('toast-container').appendChild(el); setTimeout(()=>el.remove(),3800); }
+function esc(s){ return (s==null?'':String(s)).replace(/[&<>"']/g, c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c])); }
+function openModal(html, wide){ const m=document.getElementById('modal'); m.className='modal'+(wide?' wide':''); m.innerHTML=html; document.getElementById('modal-overlay').classList.add('active'); }
+function closeModal(){ document.getElementById('modal-overlay').classList.remove('active'); }
+document.getElementById('modal-overlay').addEventListener('click', e=>{ if(e.target.id==='modal-overlay') closeModal(); });
+function val(id){ const e=document.getElementById(id); return e? e.value.trim() : ''; }
+function numVal(id){ const v=val(id); return v===''?0:Number(v); }
+function fmtMoney(n){ if(n==null||n==='') return '£0.00'; return '£'+Number(n).toLocaleString('en-GB',{minimumFractionDigits:2,maximumFractionDigits:2}); }
+function fmtDate(d){ if(!d) return '—'; const dt=new Date(d); return isNaN(dt)?d:dt.toLocaleDateString('en-GB',{day:'2-digit',month:'short',year:'numeric'}); }
+function userName(id){ return state.usersById[id]?.full_name || '—'; }
+function round2(n){ return Math.round((Number(n)+Number.EPSILON)*100)/100; }
+
+// Reference lookups (loaded per-render)
+async function ref(store){ return (await idbGetAll(store)).filter(x=>x.active!==0).sort((a,b)=>(a.name||'').localeCompare(b.name||'')); }
+async function refAll(store){ return (await idbGetAll(store)); }
+function nameById(list,id){ return list.find(x=>x.id===id)?.name || '—'; }
+
+// ── Status helpers ──
+const STATUS_META = {
+  unsubmitted:{label:'Unsubmitted',c:'b-grey'},
+  rejected:{label:'Returned',c:'b-red'},
+  awaiting_manager:{label:'Awaiting manager',c:'b-amber'},
+  awaiting_finance:{label:'Awaiting finance',c:'b-amber'},
+  awaiting_reimbursement:{label:'Awaiting reimbursement',c:'b-blue'},
+  approved:{label:'Approved',c:'b-green'},
+  reimbursed:{label:'Reimbursed',c:'b-green'},
+};
+function statusBadge(s){ const m=STATUS_META[s]||{label:s,c:'b-grey'}; return `<span class="badge ${m.c}">${m.label}</span>`; }
+// Which display tab a report belongs to
+function tabGroup(status){
+  if (status==='unsubmitted'||status==='rejected') return 'unsubmitted';
+  if (status==='awaiting_manager'||status==='awaiting_finance') return 'awaiting';
+  if (status==='awaiting_reimbursement') return 'reimbursement';
+  if (status==='reimbursed') return 'reimbursed';
+  if (status==='approved') return 'approved';
+  return 'unsubmitted';
+}
+
+// ── Totals ──
+async function reportLines(reportId){ return idbByIndex('lines','report_id',reportId); }
+function lineTotals(lines){
+  let gross=0, vat=0, miles=0;
+  lines.forEach(l=>{ gross+=Number(l.amount)||0; vat+=Number(l.vat_amount)||0; if(l.line_type==='mileage') miles+=Number(l.distance_miles)||0; });
+  return { gross:round2(gross), vat:round2(vat), net:round2(gross-vat), miles:round2(miles), count:lines.length };
+}
+
+// ── Receipts (file/camera capture) ──
+let _lineReceipts = [];
+function receiptsInputHtml(){
+  return `<div class="form-group"><label>Receipts (photo or file)</label>
+    <input type="file" id="rc-input" accept="image/*,application/pdf" multiple capture="environment" onchange="addReceipts(event)">
+    <div class="receipts" id="rc-thumbs"></div></div>`;
+}
+function renderReceiptThumbs(){
+  const box = document.getElementById('rc-thumbs'); if(!box) return;
+  box.innerHTML = _lineReceipts.map((r,i)=>{
+    const inner = (r.mime||'').startsWith('image/') ? `<img src="${r.data}" alt="">` : `<span class="doc">📄</span>`;
+    return `<div class="receipt-thumb" onclick="viewReceipt(${i})">${inner}<button class="rm" onclick="event.stopPropagation();removeReceipt(${i})">×</button></div>`;
+  }).join('') || '<span class="small muted">No receipts attached.</span>';
+}
+function addReceipts(e){
+  const files = [...e.target.files];
+  let pending = files.length;
+  if(!pending) return;
+  files.forEach(f=>{
+    const reader = new FileReader();
+    reader.onload = () => { _lineReceipts.push({ name:f.name, mime:f.type, data:reader.result }); if(--pending===0) renderReceiptThumbs(); };
+    reader.readAsDataURL(f);
+  });
+  e.target.value='';
+}
+function removeReceipt(i){ _lineReceipts.splice(i,1); renderReceiptThumbs(); }
+function viewReceipt(i){
+  const r=_lineReceipts[i]; if(!r) return;
+  const w=window.open(); if(w){ w.document.write((r.mime||'').startsWith('image/')?`<img src="${r.data}" style="max-width:100%">`:`<iframe src="${r.data}" style="width:100%;height:100vh;border:none"></iframe>`); }
+}
+function viewReceiptData(data,mime){
+  const w=window.open(); if(w){ w.document.write((mime||'').startsWith('image/')?`<img src="${data}" style="max-width:100%">`:`<iframe src="${data}" style="width:100%;height:100vh;border:none"></iframe>`); }
+}
+
+// ── Excel export (HTML-table .xls; opens natively in Excel) ──
+function downloadExcel(filename, sheetName, headers, rows, title){
+  const cell = v => `<td>${v==null?'':String(v).replace(/&/g,'&amp;').replace(/</g,'&lt;')}</td>`;
+  const head = `<tr style="background:#404042;color:#FDC82F;font-weight:bold">${headers.map(h=>`<th>${h}</th>`).join('')}</tr>`;
+  const body = rows.map(r=>`<tr>${r.map(cell).join('')}</tr>`).join('');
+  const html = `<html xmlns:o="urn:schemas-microsoft-com:office:office" xmlns:x="urn:schemas-microsoft-com:office:excel"><head><meta charset="UTF-8">
+    <!--[if gte mso 9]><xml><x:ExcelWorkbook><x:ExcelWorksheets><x:ExcelWorksheet><x:Name>${sheetName}</x:Name>
+    <x:WorksheetOptions><x:DisplayGridlines/></x:WorksheetOptions></x:ExcelWorksheet></x:ExcelWorksheets></x:ExcelWorkbook></xml><![endif]-->
+    </head><body><table border="1"><tr><td colspan="${headers.length}" style="font-size:15px;font-weight:bold;color:#404042">${esc(COMPANY)} — ${esc(title||sheetName)}</td></tr>
+    <tr><td colspan="${headers.length}" style="color:#757677">Generated ${new Date().toLocaleString('en-GB')}</td></tr><tr></tr>
+    ${head}${body}</table></body></html>`;
+  const blob = new Blob([html], {type:'application/vnd.ms-excel'});
+  const a = document.createElement('a'); a.href=URL.createObjectURL(blob); a.download=filename.endsWith('.xls')?filename:filename+'.xls'; a.click(); URL.revokeObjectURL(a.href);
+}
+
+// ═══════════════════════════════════════════════
+// DASHBOARD (finance)
+// ═══════════════════════════════════════════════
+async function renderDashboard(c){
+  const reports = await idbGetAll('reports');
+  const all = []; for (const r of reports){ r._t = lineTotals(await reportLines(r.id)); all.push(r); }
+  const exp = all.filter(r=>r.type==='expense');
+  const awaitingFin = all.filter(r=>r.status==='awaiting_finance');
+  const awaitingReimb = exp.filter(r=>r.status==='awaiting_reimbursement');
+  const reimbThisItems = exp.filter(r=>r.status==='reimbursed');
+  const sum = arr => round2(arr.reduce((s,r)=>s+r._t.gross,0));
+  c.innerHTML = `
+    <div class="stat-grid">
+      <div class="stat warn clickable" onclick="navigate('finance-approvals')"><div class="num">${awaitingFin.length}</div><div class="lbl">Awaiting finance approval</div></div>
+      <div class="stat info clickable" onclick="navigate('payment-runs')"><div class="num">${fmtMoney(sum(awaitingReimb))}</div><div class="lbl">Awaiting reimbursement (${awaitingReimb.length})</div></div>
+      <div class="stat ok"><div class="num">${fmtMoney(sum(reimbThisItems))}</div><div class="lbl">Reimbursed to date</div></div>
+      <div class="stat"><div class="num">${all.length}</div><div class="lbl">Total reports</div></div>
+    </div>
+    <div class="card">
+      <div class="card-head"><h3>Recent activity</h3></div>
+      <div class="table-wrap"><table><thead><tr><th>Report</th><th>Owner</th><th>Type</th><th>Status</th><th class="num">Total</th><th></th></tr></thead><tbody>
+        ${all.sort((a,b)=>(b.created_at||'').localeCompare(a.created_at||'')).slice(0,12).map(r=>`
+          <tr class="clickable" onclick="openReport('${r.id}')">
+            <td><strong>${esc(r.title)}</strong></td><td>${esc(userName(r.user_id))}</td>
+            <td>${r.type==='creditcard'?'Credit card':'Expense'}</td><td>${statusBadge(r.status)}</td>
+            <td class="num">${fmtMoney(r._t.gross)}</td><td>›</td>
+          </tr>`).join('') || '<tr><td colspan="6" class="muted">No reports yet.</td></tr>'}
+      </tbody></table></div>
+    </div>`;
+}
+
+// ═══════════════════════════════════════════════
+// REPORT LISTS (My Expenses / My Credit Card)
+// ═══════════════════════════════════════════════
+async function renderReportList(c, type){
+  const isCCt = type==='creditcard';
+  const mine = (await idbByIndex('reports','user_id',state.user.id)).filter(r=>r.type===type);
+  for (const r of mine) r._t = lineTotals(await reportLines(r.id));
+  const tabsDef = isCCt
+    ? [['unsubmitted','Unsubmitted'],['awaiting','Awaiting Approval'],['approved','Approved']]
+    : [['unsubmitted','Unsubmitted'],['awaiting','Awaiting Approval'],['reimbursement','Awaiting Reimbursement'],['reimbursed','Reimbursed']];
+  const active = window._listTab && tabsDef.some(t=>t[0]===window._listTab) ? window._listTab : 'unsubmitted';
+  setTopbar(`<button class="btn btn-accent" onclick="newReport('${type}')">+ New Report</button>`);
+  const counts = {}; tabsDef.forEach(t=>counts[t[0]]=mine.filter(r=>tabGroup(r.status)===t[0]).length);
+  const rows = mine.filter(r=>tabGroup(r.status)===active).sort((a,b)=>(b.created_at||'').localeCompare(a.created_at||''));
+  c.innerHTML = `
+    <div class="tabs">${tabsDef.map(([k,l])=>`<div class="tab ${k===active?'active':''}" onclick="setListTab('${k}')">${l}<span class="cnt">${counts[k]}</span></div>`).join('')}</div>
+    <div class="card"><div class="table-wrap"><table><thead><tr><th>Report</th><th>Lines</th><th class="num">Net</th><th class="num">VAT</th><th class="num">Total</th><th>Status</th><th></th></tr></thead><tbody>
+      ${rows.map(r=>`<tr class="clickable" onclick="openReport('${r.id}')">
+        <td><strong>${esc(r.title)}</strong><div class="small muted">Created ${fmtDate(r.created_at)}</div></td>
+        <td>${r._t.count}</td><td class="num">${fmtMoney(r._t.net)}</td><td class="num">${fmtMoney(r._t.vat)}</td>
+        <td class="num"><strong>${fmtMoney(r._t.gross)}</strong></td><td>${statusBadge(r.status)}</td><td>›</td></tr>`).join('')
+      || `<tr><td colspan="7" class="muted" style="padding:30px;text-align:center">No reports in this category. ${active==='unsubmitted'?'Click <strong>+ New Report</strong> to start.':''}</td></tr>`}
+    </tbody></table></div></div>`;
+}
+function setListTab(t){ window._listTab=t; navigate(state.page); }
+
+function newReport(type){
+  const isCCt = type==='creditcard';
+  const def = isCCt ? 'Credit Card '+new Date().toLocaleDateString('en-GB',{month:'long',year:'numeric'}) : new Date().toLocaleDateString('en-GB',{month:'long',year:'numeric'})+' Expenses';
+  openModal(`<h2>New ${isCCt?'credit card':'expense'} report</h2><div class="modal-sub">Give the report a name, e.g. a month or a trip.</div>
+    <div class="form-group"><label class="req">Report name</label><input id="nr-title" value="${esc(def)}"></div>
+    <div class="form-group"><label>Notes (optional)</label><textarea id="nr-notes" rows="2"></textarea></div>
+    <div class="modal-actions"><button class="btn btn-outline" onclick="closeModal()">Cancel</button>
+    <button class="btn btn-primary" onclick="saveNewReport('${type}')">Create</button></div>`);
+}
+async function saveNewReport(type){
+  const title = val('nr-title'); if(!title){ toast('Enter a report name','error'); return; }
+  const id = uuid();
+  await idbPut('reports',{ id, user_id:state.user.id, type, title, status:'unsubmitted',
+    submitted_at:null, manager_approved_by:null, manager_approved_at:null, finance_approved_by:null, finance_approved_at:null,
+    reimbursed_at:null, payment_run_id:null, rejected_by:null, rejected_at:null, rejection_note:null, notes:val('nr-notes'), created_at:nowISO() });
+  await logAction('report_created',{ report_id:id });
+  closeModal(); openReport(id);
+}
+
+// ═══════════════════════════════════════════════
+// REPORT DETAIL
+// ═══════════════════════════════════════════════
+async function openReport(id){
+  state.currentReportId = id;
+  const r = await idbGet('reports', id);
+  if(!r){ toast('Report not found','error'); return navigate(state.page); }
+  const lines = (await reportLines(id)).sort((a,b)=>(a.line_date||'').localeCompare(b.line_date||''));
+  const t = lineTotals(lines);
+  const owner = state.usersById[r.user_id];
+  const isOwner = r.user_id === state.user.id;
+  const editable = isOwner && (r.status==='unsubmitted' || r.status==='rejected');
+  const isCCt = r.type==='creditcard';
+  const cats = await ref('categories'); const sups = await refAll('suppliers'); const vts = await ref('vehicle_types'); const vats = await refAll('vat_rates'); const mrs = await refAll('mileage_rates');
+  const catName = id2 => cats.find(c=>c.id===id2)?.name || '—';
+  const supName = id2 => sups.find(s=>s.id===id2)?.name || '—';
+  const vatName = id2 => vats.find(v=>v.id===id2)?.name || '—';
+
+  document.getElementById('page-title').textContent = r.title;
+  setTopbar(`<button class="btn btn-outline btn-sm" onclick="navigate('${isCCt?'my-cc':'my-expenses'}')">‹ Back</button>`);
+
+  const lineRows = lines.map(l=>{
+    if (l.line_type==='mileage'){
+      return `<tr><td>${fmtDate(l.line_date)}</td><td><span class="badge b-blue">Mileage</span></td>
+        <td>${esc(l.postcode_from)} → ${esc(l.postcode_to)}<div class="small muted">${esc(l.description)||''} ${l.vehicle_reg?'· '+esc(l.vehicle_reg):''}</div></td>
+        <td>${esc(l.vehicle_type)}<div class="small muted">${l.distance_miles} mi</div></td>
+        <td class="num">${fmtMoney(l.vat_amount)}</td><td class="num"><strong>${fmtMoney(l.amount)}</strong></td>
+        <td>${receiptCountBadge(l)}</td>
+        <td>${editable?`<button class="btn btn-sm btn-outline" onclick="editLine('${l.id}')">Edit</button> <button class="btn btn-sm btn-danger" onclick="deleteLine('${l.id}')">×</button>`:''}</td></tr>`;
+    }
+    return `<tr><td>${fmtDate(l.line_date)}</td><td><span class="badge b-yellow">Expense</span></td>
+      <td>${esc(supName(l.supplier_id))}<div class="small muted">${esc(l.description)||''}</div></td>
+      <td>${esc(catName(l.category_id))}<div class="small muted">${esc(vatName(l.vat_rate_id))}</div></td>
+      <td class="num">${fmtMoney(l.vat_amount)}</td><td class="num"><strong>${fmtMoney(l.amount)}</strong></td>
+      <td>${receiptCountBadge(l)}</td>
+      <td>${editable?`<button class="btn btn-sm btn-outline" onclick="editLine('${l.id}')">Edit</button> <button class="btn btn-sm btn-danger" onclick="deleteLine('${l.id}')">×</button>`:''}</td></tr>`;
+  }).join('') || `<tr><td colspan="8" class="muted" style="text-align:center;padding:24px">No expenses added yet.</td></tr>`;
+
+  c_html(`
+    ${r.status==='rejected' ? `<div class="card" style="border-left:5px solid var(--danger)"><strong style="color:var(--danger)">Returned for changes</strong><div class="small">${esc(r.rejection_note)||'No note provided.'} — please amend and resubmit.</div></div>`:''}
+    <div class="totbar">
+      <div class="t"><div class="v">${fmtMoney(t.gross)}</div><div class="l">Total claim</div></div>
+      <div class="t"><div class="v">${fmtMoney(t.net)}</div><div class="l">Net</div></div>
+      <div class="t"><div class="v">${fmtMoney(t.vat)}</div><div class="l">VAT</div></div>
+      <div class="t"><div class="v">${t.count}</div><div class="l">Lines</div></div>
+      <div class="t" style="margin-left:auto;text-align:right"><div class="l">Owner</div><div style="font-weight:600">${esc(owner?.full_name||'—')}</div><div class="l">${statusBadge(r.status)}</div></div>
+    </div>
+    <div class="card">
+      <div class="card-head"><h3>Lines</h3><div style="display:flex;gap:8px">
+        ${editable?`<button class="btn btn-accent btn-sm" onclick="addExpenseLine()">+ Expense</button>${!isCCt?`<button class="btn btn-primary btn-sm" onclick="addMileageLine()">+ Mileage</button>`:''}`:''}
+      </div></div>
+      <div class="table-wrap"><table><thead><tr><th>Date</th><th>Type</th><th>Supplier / Journey</th><th>Category / Vehicle</th><th class="num">VAT</th><th class="num">Amount</th><th>Rcpt</th><th></th></tr></thead><tbody>${lineRows}</tbody></table></div>
+    </div>
+    ${approvalTrailHtml(r)}
+    <div class="card"><div style="display:flex;gap:10px;flex-wrap:wrap">
+      ${editable && isOwner ? `<button class="btn btn-success" onclick="submitReport('${r.id}')" ${t.count?'':'disabled'}>Submit for approval</button>`:''}
+      ${editable ? `<button class="btn btn-outline" onclick="renameReport('${r.id}')">Rename</button>
+      <button class="btn btn-danger" onclick="deleteReport('${r.id}')">Delete report</button>`:''}
+      <button class="btn btn-info" style="margin-left:auto" onclick="exportReport('${r.id}')">Export to Excel</button>
+    </div></div>`);
+}
+function c_html(html){ document.getElementById('content').innerHTML = html; }
+function receiptCountBadge(l){ const n=(l.receipts||[]).length; return n?`<span class="badge b-grey" title="${n} receipt(s)" style="cursor:pointer" onclick="showLineReceipts('${l.id}')">📎 ${n}</span>`:'<span class="small muted">—</span>'; }
+async function showLineReceipts(lineId){
+  const l = await idbGet('lines', lineId); const rs=l.receipts||[];
+  openModal(`<h2>Receipts</h2><div class="receipts">${rs.map((r,i)=>{const inner=(r.mime||'').startsWith('image/')?`<img src="${r.data}">`:`<span class="doc">📄</span>`;return `<div class="receipt-thumb" onclick="viewReceiptData('${r.data}','${r.mime}')">${inner}</div>`;}).join('')||'<span class="muted small">None.</span>'}</div><div class="modal-actions"><button class="btn btn-outline" onclick="closeModal()">Close</button></div>`);
+}
+
+function approvalTrailHtml(r){
+  const isCCt = r.type==='creditcard';
+  const steps = [];
+  steps.push({ label:'Created / submitted', done:!!r.submitted_at, info:r.submitted_at?fmtDate(r.submitted_at):'' });
+  steps.push({ label:'Manager approval', done:!!r.manager_approved_at, cur:r.status==='awaiting_manager', info:r.manager_approved_at?`${userName(r.manager_approved_by)} · ${fmtDate(r.manager_approved_at)}`:'' });
+  steps.push({ label:'Finance approval', done:!!r.finance_approved_at, cur:r.status==='awaiting_finance', info:r.finance_approved_at?`${userName(r.finance_approved_by)} · ${fmtDate(r.finance_approved_at)}`:'' });
+  if (!isCCt) steps.push({ label:'Reimbursed', done:!!r.reimbursed_at, cur:r.status==='awaiting_reimbursement', info:r.reimbursed_at?fmtDate(r.reimbursed_at):'' });
+  return `<div class="card"><h3 style="margin-bottom:10px">Approval progress</h3><div class="trail">
+    ${steps.map(s=>`<div class="step ${s.done?'done':''} ${s.cur?'cur':''}"><strong>${s.label}</strong>${s.info?` <span class="muted">— ${esc(s.info)}</span>`:''}</div>`).join('')}
+  </div></div>`;
+}
+
+async function renameReport(id){
+  const r = await idbGet('reports', id);
+  openModal(`<h2>Rename report</h2><div class="form-group"><input id="rn-title" value="${esc(r.title)}"></div>
+    <div class="modal-actions"><button class="btn btn-outline" onclick="closeModal()">Cancel</button><button class="btn btn-primary" onclick="doRename('${id}')">Save</button></div>`);
+}
+async function doRename(id){ const r=await idbGet('reports',id); r.title=val('rn-title')||r.title; await idbPut('reports',r); closeModal(); openReport(id); }
+async function deleteReport(id){
+  if(!confirm('Delete this report and all its lines? This cannot be undone.')) return;
+  for (const l of await reportLines(id)) await idbDelete('lines', l.id);
+  await idbDelete('reports', id); await logAction('report_deleted',{report_id:id});
+  toast('Report deleted'); navigate(state.page);
+}
+async function deleteLine(id){
+  if(!confirm('Delete this line?')) return;
+  await idbDelete('lines', id); openReport(state.currentReportId);
+}
+async function submitReport(id){
+  const r = await idbGet('reports', id);
+  const lines = await reportLines(id);
+  if(!lines.length){ toast('Add at least one line first','error'); return; }
+  const owner = state.usersById[r.user_id];
+  if (owner?.approver1_id) r.status='awaiting_manager';
+  else if (owner?.approver2_id) r.status='awaiting_finance';
+  else r.status='awaiting_finance';
+  r.submitted_at = nowISO(); r.rejected_by=null; r.rejected_at=null; r.rejection_note=null;
+  await idbPut('reports', r); await logAction('report_submitted',{report_id:id});
+  toast('Submitted for approval'); navigate(r.type==='creditcard'?'my-cc':'my-expenses');
+}
+
+// ═══════════════════════════════════════════════
+// LINE MODALS — Expense
+// ═══════════════════════════════════════════════
+async function addExpenseLine(){ openExpenseLineModal(null); }
+async function editLine(id){ const l=await idbGet('lines',id); l.line_type==='mileage'?openMileageLineModal(l):openExpenseLineModal(l); }
+
+async function openExpenseLineModal(line){
+  _lineReceipts = line ? [...(line.receipts||[])] : [];
+  const cats = await ref('categories'); const sups = await ref('suppliers'); const vats = await refAll('vat_rates');
+  const catOpts = optionList(cats.map(c=>({value:c.id,label:`${c.name}${c.nominal_code?' ('+c.nominal_code+')':''}`})), line?.category_id, true);
+  const supOpts = optionList(sups.map(s=>({value:s.id,label:s.name})), line?.supplier_id, true);
+  const vatOpts = optionList(vats.filter(v=>v.active!==0).map(v=>({value:v.id,label:`${v.name}`})), line?.vat_rate_id || vats.find(v=>v.name.includes('Standard'))?.id, false);
+  openModal(`<h2>${line?'Edit':'Add'} expense</h2>
+    <div class="scan-box">📷 <strong>Auto-scan (beta):</strong> attach a receipt photo below, then click <em>Scan receipt</em> to auto-fill the date, amount &amp; supplier. <span class="muted">Needs an internet connection the first time it runs.</span></div>
+    <div class="form-row"><div class="form-group"><label class="req">Date</label><input type="date" id="el-date" value="${line?.line_date||today()}"></div>
+      <div class="form-group"><label>Supplier</label><select id="el-supplier">${supOpts}</select>
+        <button type="button" class="btn btn-sm btn-outline" style="margin-top:6px" onclick="toggleNewSupplier()">+ New supplier</button>
+        <input id="el-supplier-new" class="hidden" style="margin-top:6px" placeholder="New supplier name (added for everyone)"></div></div>
+    <div class="form-row-3">
+      <div class="form-group"><label class="req">Category</label><select id="el-category">${catOpts}</select></div>
+      <div class="form-group"><label class="req">Amount (gross £)</label><input type="number" step="0.01" id="el-amount" value="${line?.amount||''}" oninput="recalcExpenseVat()"></div>
+      <div class="form-group"><label>VAT rate</label><select id="el-vat-rate" onchange="recalcExpenseVat()">${vatOpts}</select></div>
+    </div>
+    <div class="form-row"><div class="form-group"><label>VAT (£)</label><input type="number" step="0.01" id="el-vat" value="${line?.vat_amount||''}"><div class="small muted">Auto-calculated from gross &amp; rate; editable.</div></div>
+      <div class="form-group"><label>Description</label><input id="el-desc" value="${esc(line?.description||'')}"></div></div>
+    ${receiptsInputHtml()}
+    <div class="modal-actions">
+      <button class="btn btn-outline" onclick="runReceiptScan()">⮌ Scan receipt</button>
+      <button class="btn btn-outline" onclick="closeModal()">Cancel</button>
+      <button class="btn btn-primary" onclick="saveExpenseLine('${line?.id||''}')">Save expense</button>
+    </div>`, true);
+  renderReceiptThumbs();
+  if(!line) recalcExpenseVat();
+}
+function toggleNewSupplier(){ const i=document.getElementById('el-supplier-new'); i.classList.toggle('hidden'); if(!i.classList.contains('hidden')){ document.getElementById('el-supplier').value=''; i.focus(); } }
+async function recalcExpenseVat(){
+  const amt = numVal('el-amount'); const vid = val('el-vat-rate');
+  const vats = await refAll('vat_rates'); const v = vats.find(x=>x.id===vid);
+  const pct = v ? Number(v.percent) : 0;
+  const vat = pct>0 ? round2(amt * pct/(100+pct)) : 0;
+  const f = document.getElementById('el-vat'); if(f) f.value = vat.toFixed(2);
+}
+async function saveExpenseLine(id){
+  const amount = numVal('el-amount');
+  if(!val('el-date') || !val('el-category') || !amount){ toast('Date, category and amount are required','error'); return; }
+  let supplierId = val('el-supplier');
+  const newSup = val('el-supplier-new');
+  if (newSup){ supplierId = uuid(); await idbPut('suppliers',{ id:supplierId, name:newSup, active:1, created_by:state.user.username, created_at:nowISO() }); toast(`Supplier “${newSup}” added for everyone`); }
+  const line = {
+    id: id||uuid(), report_id: state.currentReportId, line_type:'expense',
+    line_date: val('el-date'), description: val('el-desc'),
+    supplier_id: supplierId, category_id: val('el-category'),
+    amount: round2(amount), vat_rate_id: val('el-vat-rate'), vat_amount: round2(numVal('el-vat')),
+    postcode_from:'', postcode_to:'', distance_miles:0, vehicle_type:'', vehicle_reg:'', mileage_rate_id:'',
+    receipts: _lineReceipts, created_at: nowISO()
+  };
+  await idbPut('lines', line); closeModal(); openReport(state.currentReportId);
+}
+
+// ── Mileage line ──
+async function addMileageLine(){ openMileageLineModal(null); }
+async function openMileageLineModal(line){
+  _lineReceipts = line ? [...(line.receipts||[])] : [];
+  const vts = await ref('vehicle_types'); const mrs = (await refAll('mileage_rates')).filter(r=>r.active!==0);
+  const vtOpts = optionList(vts.map(v=>({value:v.name,label:v.name})), line?.vehicle_type, true);
+  const rateOpts = optionList(mrs.map(r=>({value:r.id,label:`${r.name}${r.vehicle_type?' — '+r.vehicle_type:''} (${r.rate_pence}p/mi)`})), line?.mileage_rate_id, true);
+  openModal(`<h2>${line?'Edit':'Add'} mileage</h2>
+    <div class="form-row"><div class="form-group"><label class="req">Date</label><input type="date" id="ml-date" value="${line?.line_date||today()}"></div>
+      <div class="form-group"><label>Vehicle reg</label><input id="ml-reg" value="${esc(line?.vehicle_reg||'')}" placeholder="e.g. YK19 ABC"></div></div>
+    <div class="form-row-3">
+      <div class="form-group"><label>Postcode from</label><input id="ml-from" value="${esc(line?.postcode_from||'')}" placeholder="LS10 1AB"></div>
+      <div class="form-group"><label>Postcode to</label><input id="ml-to" value="${esc(line?.postcode_to||'')}" placeholder="RH10 8GH"></div>
+      <div class="form-group"><label class="req">Distance (miles)</label><input type="number" step="0.1" id="ml-dist" value="${line?.distance_miles||''}" oninput="recalcMileage()">
+        <button type="button" class="btn btn-sm btn-outline" style="margin-top:6px" onclick="estimateDistance()">↻ Estimate from postcodes</button></div>
+    </div>
+    <div class="form-row">
+      <div class="form-group"><label>Vehicle type</label><select id="ml-vehicle" onchange="onVehicleChange()">${vtOpts}</select></div>
+      <div class="form-group"><label class="req">Mileage rate</label><select id="ml-rate" onchange="recalcMileage()">${rateOpts}</select></div>
+    </div>
+    <div class="form-group"><label>Description</label><input id="ml-desc" value="${esc(line?.description||'')}" placeholder="Reason for journey"></div>
+    <div class="totbar" style="margin-top:4px"><div class="t"><div class="v" id="ml-amount-d">£0.00</div><div class="l">Amount payable</div></div>
+      <div class="t"><div class="v" id="ml-vat-d">£0.00</div><div class="l">VAT (reclaimable, from advisory fuel rate)</div></div></div>
+    ${receiptsInputHtml()}
+    <div class="modal-actions"><button class="btn btn-outline" onclick="closeModal()">Cancel</button>
+      <button class="btn btn-primary" onclick="saveMileageLine('${line?.id||''}')">Save mileage</button></div>`, true);
+  renderReceiptThumbs();
+  recalcMileage();
+}
+async function onVehicleChange(){
+  // auto-pick a matching rate for the chosen vehicle type if current doesn't match
+  const vt = val('ml-vehicle'); const mrs = (await refAll('mileage_rates')).filter(r=>r.active!==0);
+  const sel = document.getElementById('ml-rate');
+  const cur = mrs.find(r=>r.id===sel.value);
+  if (!cur || (cur.vehicle_type && cur.vehicle_type!==vt)){
+    const match = mrs.find(r=>r.vehicle_type===vt);
+    if (match) sel.value = match.id;
+  }
+  recalcMileage();
+}
+async function recalcMileage(){
+  const dist = numVal('ml-dist'); const rid = val('ml-rate');
+  const mrs = await refAll('mileage_rates'); const vats = await refAll('vat_rates');
+  const r = mrs.find(x=>x.id===rid);
+  let amount=0, vat=0;
+  if (r){
+    amount = round2(dist * Number(r.rate_pence)/100);
+    const v = vats.find(x=>x.id===r.vat_rate_id); const pct = v?Number(v.percent):0;
+    if (pct>0 && r.afr_pence>0) vat = round2(dist * Number(r.afr_pence)/100 * (pct/(100+pct)));
+  }
+  document.getElementById('ml-amount-d').textContent = fmtMoney(amount);
+  document.getElementById('ml-vat-d').textContent = fmtMoney(vat);
+  return { amount, vat, rate:r };
+}
+async function estimateDistance(){
+  const a = val('ml-from'), b = val('ml-to');
+  if(!a||!b){ toast('Enter both postcodes','error'); return; }
+  try{
+    const f = await fetch('https://api.postcodes.io/postcodes/'+encodeURIComponent(a));
+    const t = await fetch('https://api.postcodes.io/postcodes/'+encodeURIComponent(b));
+    const fj = await f.json(), tj = await t.json();
+    if(fj.status!==200||tj.status!==200){ toast('Postcode not found — enter distance manually','error'); return; }
+    const d = haversine(fj.result.latitude,fj.result.longitude,tj.result.latitude,tj.result.longitude)*1.3; // road factor
+    document.getElementById('ml-dist').value = d.toFixed(1);
+    recalcMileage();
+    toast('Estimated road distance — please verify');
+  }catch(e){ toast('Could not estimate (offline?) — enter distance manually','error'); }
+}
+function haversine(lat1,lon1,lat2,lon2){ const R=3958.8, toR=x=>x*Math.PI/180; const dLat=toR(lat2-lat1),dLon=toR(lon2-lon1); const x=Math.sin(dLat/2)**2+Math.cos(toR(lat1))*Math.cos(toR(lat2))*Math.sin(dLon/2)**2; return R*2*Math.atan2(Math.sqrt(x),Math.sqrt(1-x)); }
+async function saveMileageLine(id){
+  const dist = numVal('ml-dist'); const rid = val('ml-rate');
+  if(!val('ml-date')||!dist||!rid){ toast('Date, distance and mileage rate are required','error'); return; }
+  const { amount, vat } = await recalcMileage();
+  const line = {
+    id: id||uuid(), report_id: state.currentReportId, line_type:'mileage',
+    line_date: val('ml-date'), description: val('ml-desc'),
+    supplier_id:'', category_id:'', amount: round2(amount), vat_rate_id:'', vat_amount: round2(vat),
+    postcode_from: val('ml-from'), postcode_to: val('ml-to'), distance_miles: dist,
+    vehicle_type: val('ml-vehicle'), vehicle_reg: val('ml-reg'), mileage_rate_id: rid,
+    receipts: _lineReceipts, created_at: nowISO()
+  };
+  await idbPut('lines', line); closeModal(); openReport(state.currentReportId);
+}
+
+// ── Receipt OCR (auto-scan) ──
+let _tesseract = null;
+function loadTesseract(){
+  if (window.Tesseract) return Promise.resolve(window.Tesseract);
+  return new Promise((res,rej)=>{ const s=document.createElement('script'); s.src='https://cdn.jsdelivr.net/npm/tesseract.js@5/dist/tesseract.min.js'; s.onload=()=>res(window.Tesseract); s.onerror=()=>rej(new Error('load failed')); document.head.appendChild(s); });
+}
+async function runReceiptScan(){
+  const img = _lineReceipts.find(r=>(r.mime||'').startsWith('image/'));
+  if(!img){ toast('Attach a receipt photo first','error'); return; }
+  toast('Scanning receipt…','info');
+  let T; try { T = await loadTesseract(); } catch(e){ toast('Auto-scan needs an internet connection — enter details manually','error'); return; }
+  try{
+    const { data } = await T.recognize(img.data, 'eng');
+    const text = data.text || '';
+    parseReceiptText(text);
+    toast('Scan complete — please check the fields');
+  }catch(e){ toast('Could not read the receipt — enter details manually','error'); }
+}
+function parseReceiptText(text){
+  const lines = text.split(/\n/).map(s=>s.trim()).filter(Boolean);
+  // Amount: prefer a line mentioning total, else the largest money value
+  const moneyRe = /(?:£|gbp)?\s*(\d{1,5}[.,]\d{2})/ig;
+  let amounts = [];
+  lines.forEach(l=>{ let m; while((m=moneyRe.exec(l))){ amounts.push({v:parseFloat(m[1].replace(',','.')), total:/total|amount due|to pay|balance/i.test(l), vat:/vat/i.test(l)}); } });
+  const totals = amounts.filter(a=>a.total && !a.vat);
+  const pick = (totals.length?totals:amounts.filter(a=>!a.vat)).sort((a,b)=>b.v-a.v)[0];
+  if (pick){ const f=document.getElementById('el-amount'); if(f){ f.value=pick.v.toFixed(2); } }
+  const vatLine = amounts.find(a=>a.vat);
+  if (vatLine){ const vf=document.getElementById('el-vat'); if(vf) vf.value=vatLine.v.toFixed(2); }
+  else recalcExpenseVat();
+  // Date
+  const dm = text.match(/(\d{1,2})[\/\-.](\d{1,2})[\/\-.](\d{2,4})/);
+  if (dm){ let [_,d,mo,y]=dm; if(y.length===2)y='20'+y; const iso=`${y}-${String(mo).padStart(2,'0')}-${String(d).padStart(2,'0')}`; const f=document.getElementById('el-date'); if(f&&!isNaN(new Date(iso))) f.value=iso; }
+  // Supplier guess = first line with letters
+  const sup = lines.find(l=>/[a-z]{3,}/i.test(l) && !/receipt|invoice|vat|tel|www|tax/i.test(l));
+  if (sup){ const ni=document.getElementById('el-supplier-new'); if(ni){ ni.classList.remove('hidden'); ni.value=sup.slice(0,40); document.getElementById('el-supplier').value=''; } }
+}
+
+async function exportReport(id){
+  const r = await idbGet('reports', id);
+  const lines = (await reportLines(id)).sort((a,b)=>(a.line_date||'').localeCompare(b.line_date||''));
+  const cats = await refAll('categories'); const sups = await refAll('suppliers'); const vats = await refAll('vat_rates');
+  const headers = ['Date','Type','Supplier/Journey','Category','Nominal','VAT rate','Net','VAT','Gross','Description','Vehicle','Reg','Miles','Receipts'];
+  const rows = lines.map(l=>{
+    const cat = cats.find(c=>c.id===l.category_id);
+    return [ l.line_date, l.line_type==='mileage'?'Mileage':'Expense',
+      l.line_type==='mileage'?`${l.postcode_from} > ${l.postcode_to}`:nameById(sups,l.supplier_id),
+      l.line_type==='mileage'?'Mileage':(cat?.name||''), l.line_type==='mileage'?'':(cat?.nominal_code||''),
+      nameById(vats,l.vat_rate_id), round2((l.amount||0)-(l.vat_amount||0)).toFixed(2), (l.vat_amount||0).toFixed(2), (l.amount||0).toFixed(2),
+      l.description, l.vehicle_type||'', l.vehicle_reg||'', l.distance_miles||'', (l.receipts||[]).length ];
+  });
+  const t = lineTotals(lines);
+  rows.push(['','','','','','TOTAL', t.net.toFixed(2), t.vat.toFixed(2), t.gross.toFixed(2),'','','','','']);
+  downloadExcel(`${r.title.replace(/[^\w]+/g,'_')}.xls`, 'Report', headers, rows, r.title+' — '+userName(r.user_id));
+}
+
+// ═══════════════════════════════════════════════
+// APPROVALS (manager)
+// ═══════════════════════════════════════════════
+async function renderApprovals(c){
+  const reports = await idbGetAll('reports');
+  const queue = []; const decided = [];
+  for (const r of reports){
+    const owner = state.usersById[r.user_id];
+    if (owner?.approver1_id !== state.user.id) continue;
+    r._t = lineTotals(await reportLines(r.id));
+    if (r.status==='awaiting_manager') queue.push(r); else if (r.manager_approved_by===state.user.id) decided.push(r);
+  }
+  c.innerHTML = `
+    <div class="card"><div class="card-head"><h3>Awaiting your approval (${queue.length})</h3></div>
+      <div class="table-wrap"><table><thead><tr><th>Report</th><th>Owner</th><th>Type</th><th>Submitted</th><th class="num">Total</th><th></th></tr></thead><tbody>
+        ${queue.map(r=>`<tr><td class="clickable" onclick="openApproval('${r.id}','manager')"><strong>${esc(r.title)}</strong></td>
+          <td>${esc(userName(r.user_id))}</td><td>${r.type==='creditcard'?'Credit card':'Expense'}</td><td>${fmtDate(r.submitted_at)}</td>
+          <td class="num">${fmtMoney(r._t.gross)}</td>
+          <td><button class="btn btn-sm btn-success" onclick="openApproval('${r.id}','manager')">Review</button></td></tr>`).join('')
+        || '<tr><td colspan="6" class="muted" style="text-align:center;padding:24px">Nothing awaiting your approval.</td></tr>'}
+      </tbody></table></div></div>
+    ${decided.length?`<div class="card"><h3>Previously approved by you</h3><div class="table-wrap"><table><tbody>
+      ${decided.map(r=>`<tr class="clickable" onclick="openReport('${r.id}')"><td>${esc(r.title)}</td><td>${esc(userName(r.user_id))}</td><td>${statusBadge(r.status)}</td><td class="num">${fmtMoney(r._t.gross)}</td></tr>`).join('')}
+    </tbody></table></div></div>`:''}`;
+}
+async function renderFinanceApprovals(c){
+  const reports = await idbGetAll('reports');
+  const queue = [];
+  for (const r of reports){ if (r.status==='awaiting_finance'){ r._t = lineTotals(await reportLines(r.id)); queue.push(r); } }
+  c.innerHTML = `<div class="card"><div class="card-head"><h3>Awaiting finance approval (${queue.length})</h3></div>
+    <div class="table-wrap"><table><thead><tr><th>Report</th><th>Owner</th><th>Type</th><th>Mgr approved</th><th class="num">Total</th><th></th></tr></thead><tbody>
+      ${queue.map(r=>`<tr><td class="clickable" onclick="openApproval('${r.id}','finance')"><strong>${esc(r.title)}</strong></td>
+        <td>${esc(userName(r.user_id))}</td><td>${r.type==='creditcard'?'Credit card':'Expense'}</td>
+        <td>${r.manager_approved_at?userName(r.manager_approved_by):'<span class="muted">direct</span>'}</td>
+        <td class="num">${fmtMoney(r._t.gross)}</td>
+        <td><button class="btn btn-sm btn-success" onclick="openApproval('${r.id}','finance')">Review</button></td></tr>`).join('')
+      || '<tr><td colspan="6" class="muted" style="text-align:center;padding:24px">Nothing awaiting finance approval.</td></tr>'}
+    </tbody></table></div></div>`;
+}
+async function openApproval(id, stage){
+  state.currentReportId = id;
+  const r = await idbGet('reports', id);
+  const lines = (await reportLines(id)).sort((a,b)=>(a.line_date||'').localeCompare(b.line_date||''));
+  const cats = await refAll('categories'); const sups = await refAll('suppliers'); const t = lineTotals(lines);
+  const rowsHtml = lines.map(l=>`<tr><td>${fmtDate(l.line_date)}</td><td>${l.line_type==='mileage'?'<span class="badge b-blue">Mileage</span>':'<span class="badge b-yellow">Expense</span>'}</td>
+    <td>${l.line_type==='mileage'?esc(l.postcode_from)+' → '+esc(l.postcode_to):esc(nameById(sups,l.supplier_id))}<div class="small muted">${esc(l.description)||''}</div></td>
+    <td>${l.line_type==='mileage'?esc(l.vehicle_type)+' · '+l.distance_miles+'mi':esc(nameById(cats,l.category_id))}</td>
+    <td class="num">${fmtMoney(l.vat_amount)}</td><td class="num">${fmtMoney(l.amount)}</td><td>${receiptCountBadge(l)}</td></tr>`).join('');
+  openModal(`<h2>${esc(r.title)}</h2><div class="modal-sub">${esc(userName(r.user_id))} · ${r.type==='creditcard'?'Credit card':'Expense'} · Total <strong>${fmtMoney(t.gross)}</strong> (VAT ${fmtMoney(t.vat)})</div>
+    <div class="table-wrap"><table><thead><tr><th>Date</th><th>Type</th><th>Detail</th><th>Category/Vehicle</th><th class="num">VAT</th><th class="num">Amount</th><th>Rcpt</th></tr></thead><tbody>${rowsHtml}</tbody></table></div>
+    <div class="form-group" style="margin-top:14px"><label>Note (required if returning)</label><textarea id="ap-note" rows="2"></textarea></div>
+    <div class="modal-actions"><button class="btn btn-outline" onclick="closeModal()">Cancel</button>
+      <button class="btn btn-danger" onclick="rejectReport('${id}')">Return to employee</button>
+      <button class="btn btn-success" onclick="approveReport('${id}','${stage}')">Approve</button></div>`, true);
+}
+async function approveReport(id, stage){
+  const r = await idbGet('reports', id);
+  const owner = state.usersById[r.user_id];
+  if (stage==='manager'){
+    r.manager_approved_by = state.user.id; r.manager_approved_at = nowISO();
+    r.status = owner?.approver2_id ? 'awaiting_finance' : (r.type==='creditcard'?'approved':'awaiting_reimbursement');
+    if (r.status!=='awaiting_finance'){ r.finance_approved_by=state.user.id; r.finance_approved_at=nowISO(); }
+  } else {
+    r.finance_approved_by = state.user.id; r.finance_approved_at = nowISO();
+    r.status = r.type==='creditcard' ? 'approved' : 'awaiting_reimbursement';
+  }
+  await idbPut('reports', r); await logAction('report_approved',{report_id:id,stage});
+  closeModal(); toast('Approved'); navigate(state.page);
+}
+async function rejectReport(id){
+  const note = val('ap-note'); if(!note){ toast('Please add a note explaining what to change','error'); return; }
+  const r = await idbGet('reports', id);
+  r.status='rejected'; r.rejected_by=state.user.id; r.rejected_at=nowISO(); r.rejection_note=note;
+  await idbPut('reports', r); await logAction('report_rejected',{report_id:id});
+  closeModal(); toast('Returned to employee'); navigate(state.page);
+}
+
+// ═══════════════════════════════════════════════
+// PAYMENT RUNS (finance)
+// ═══════════════════════════════════════════════
+async function renderPaymentRuns(c){
+  const reports = await idbGetAll('reports');
+  const due = [];
+  for (const r of reports){ if (r.type==='expense' && r.status==='awaiting_reimbursement'){ r._t=lineTotals(await reportLines(r.id)); due.push(r); } }
+  const runs = (await idbGetAll('payment_runs')).sort((a,b)=>(b.created_at||'').localeCompare(a.created_at||''));
+  const dueTotal = round2(due.reduce((s,r)=>s+r._t.gross,0));
+  setTopbar(due.length?`<button class="btn btn-accent" onclick="createPaymentRun()">Create payment run (${due.length})</button>`:'');
+  c.innerHTML = `
+    <div class="stat-grid">
+      <div class="stat info"><div class="num">${fmtMoney(dueTotal)}</div><div class="lbl">Due for reimbursement</div></div>
+      <div class="stat"><div class="num">${due.length}</div><div class="lbl">Approved reports</div></div>
+      <div class="stat ok"><div class="num">${runs.length}</div><div class="lbl">Payment runs</div></div>
+    </div>
+    <div class="card"><div class="card-head"><h3>Approved &amp; awaiting reimbursement</h3>
+      ${due.length?`<button class="btn btn-sm btn-accent" onclick="createPaymentRun()">Pay all (${fmtMoney(dueTotal)})</button>`:''}</div>
+      <div class="table-wrap"><table><thead><tr><th>Report</th><th>Owner</th><th>Approved</th><th class="num">Amount</th><th></th></tr></thead><tbody>
+        ${due.map(r=>`<tr><td class="clickable" onclick="openReport('${r.id}')"><strong>${esc(r.title)}</strong></td><td>${esc(userName(r.user_id))}</td>
+          <td>${fmtDate(r.finance_approved_at)}</td><td class="num">${fmtMoney(r._t.gross)}</td>
+          <td><button class="btn btn-sm btn-success" onclick="markReimbursed('${r.id}')">Mark reimbursed</button></td></tr>`).join('')
+        || '<tr><td colspan="5" class="muted" style="text-align:center;padding:24px">Nothing awaiting reimbursement.</td></tr>'}
+      </tbody></table></div></div>
+    <div class="card"><div class="card-head"><h3>Payment run history</h3></div>
+      <div class="table-wrap"><table><thead><tr><th>Reference</th><th>Date</th><th>By</th><th>Reports</th><th class="num">Total</th><th></th></tr></thead><tbody>
+        ${runs.map(p=>`<tr><td><strong>${esc(p.reference)}</strong></td><td>${fmtDate(p.run_date)}</td><td>${esc(userName(p.created_by))}</td>
+          <td>${(p.report_ids||[]).length}</td><td class="num">${fmtMoney(p.total)}</td>
+          <td><button class="btn btn-sm btn-outline" onclick="exportPaymentRun('${p.id}')">Excel</button></td></tr>`).join('')
+        || '<tr><td colspan="6" class="muted" style="text-align:center;padding:24px">No payment runs yet.</td></tr>'}
+      </tbody></table></div></div>`;
+}
+async function createPaymentRun(){
+  const reports = await idbGetAll('reports');
+  const due = [];
+  for (const r of reports){ if (r.type==='expense' && r.status==='awaiting_reimbursement'){ r._t=lineTotals(await reportLines(r.id)); due.push(r); } }
+  if(!due.length){ toast('Nothing to pay','error'); return; }
+  const total = round2(due.reduce((s,r)=>s+r._t.gross,0));
+  const ref = 'PR-'+new Date().toISOString().slice(0,10).replace(/-/g,'')+'-'+Math.floor(Math.random()*900+100);
+  openModal(`<h2>Create payment run</h2><div class="modal-sub">${due.length} report(s) · ${fmtMoney(total)}</div>
+    <div class="form-row"><div class="form-group"><label>Reference</label><input id="pr-ref" value="${ref}"></div>
+      <div class="form-group"><label>Payment date</label><input type="date" id="pr-date" value="${today()}"></div></div>
+    <div class="table-wrap"><table><thead><tr><th>Report</th><th>Owner</th><th class="num">Amount</th></tr></thead><tbody>
+      ${due.map(r=>`<tr><td>${esc(r.title)}</td><td>${esc(userName(r.user_id))}</td><td class="num">${fmtMoney(r._t.gross)}</td></tr>`).join('')}
+      <tr><td colspan="2"><strong>Total</strong></td><td class="num"><strong>${fmtMoney(total)}</strong></td></tr></tbody></table></div>
+    <div class="modal-actions"><button class="btn btn-outline" onclick="closeModal()">Cancel</button>
+      <button class="btn btn-success" onclick="confirmPaymentRun()">Confirm &amp; mark reimbursed</button></div>`, true);
+}
+async function confirmPaymentRun(){
+  const reports = await idbGetAll('reports');
+  const due = [];
+  for (const r of reports){ if (r.type==='expense' && r.status==='awaiting_reimbursement'){ r._t=lineTotals(await reportLines(r.id)); due.push(r); } }
+  const total = round2(due.reduce((s,r)=>s+r._t.gross,0));
+  const runId = uuid();
+  const runDate = val('pr-date') || today();
+  await idbPut('payment_runs',{ id:runId, reference:val('pr-ref')||('PR-'+today().replace(/-/g,'')), run_date:runDate, created_by:state.user.id, total, status:'completed', notes:'', report_ids: due.map(r=>r.id), created_at:nowISO() });
+  for (const r of due){ r.status='reimbursed'; r.reimbursed_at=runDate; r.payment_run_id=runId; await idbPut('reports', r); }
+  await logAction('payment_run',{ run_id:runId, count:due.length, total });
+  closeModal(); toast(`Payment run created — ${due.length} report(s) reimbursed`); navigate('payment-runs');
+}
+async function markReimbursed(id){
+  const r = await idbGet('reports', id);
+  r.status='reimbursed'; r.reimbursed_at=today(); await idbPut('reports', r);
+  await logAction('reimbursed',{report_id:id});
+  toast('Marked reimbursed'); navigate('payment-runs');
+}
+async function exportPaymentRun(id){
+  const p = await idbGet('payment_runs', id);
+  const rows = [];
+  for (const rid of p.report_ids||[]){ const r=await idbGet('reports',rid); if(!r) continue; const t=lineTotals(await reportLines(rid));
+    rows.push([userName(r.user_id), r.title, t.net.toFixed(2), t.vat.toFixed(2), t.gross.toFixed(2)]); }
+  rows.push(['','TOTAL','','', p.total.toFixed(2)]);
+  downloadExcel(`${p.reference}.xls`,'PaymentRun',['Employee','Report','Net','VAT','Gross'],rows,'Payment run '+p.reference);
+}
+
+// ═══════════════════════════════════════════════
+// ANALYTICS / REPORTS (finance, Excel export)
+// ═══════════════════════════════════════════════
+async function renderAnalytics(c){
+  const reports = await idbGetAll('reports');
+  const allLines = await idbGetAll('lines');
+  const cats = await refAll('categories'); const depts = await refAll('departments'); const sups = await refAll('suppliers'); const vats = await refAll('vat_rates');
+  const linesByReport = {}; allLines.forEach(l=>{ (linesByReport[l.report_id]=linesByReport[l.report_id]||[]).push(l); });
+  // Aggregations
+  const byUser={}, byCat={}, byDept={};
+  let gross=0, vat=0;
+  reports.forEach(r=>{
+    const ls = linesByReport[r.id]||[]; const owner=state.usersById[r.user_id];
+    ls.forEach(l=>{
+      const g=Number(l.amount)||0, v=Number(l.vat_amount)||0; gross+=g; vat+=v;
+      byUser[r.user_id]=(byUser[r.user_id]||0)+g;
+      const ck = l.line_type==='mileage'?'Mileage':(cats.find(x=>x.id===l.category_id)?.name||'Uncategorised'); byCat[ck]=(byCat[ck]||0)+g;
+      const dk = depts.find(d=>d.id===owner?.department_id)?.name||'Unassigned'; byDept[dk]=(byDept[dk]||0)+g;
+    });
+  });
+  const tbl = (obj, keyName, fmtKey) => Object.entries(obj).sort((a,b)=>b[1]-a[1]).map(([k,v])=>`<tr><td>${esc(fmtKey?fmtKey(k):k)}</td><td class="num">${fmtMoney(v)}</td></tr>`).join('')||'<tr><td colspan="2" class="muted">No data</td></tr>';
+  setTopbar(`<button class="btn btn-accent" onclick="exportAllLines()">Export all expenses (Excel)</button>`);
+  c.innerHTML = `
+    <div class="stat-grid">
+      <div class="stat"><div class="num">${fmtMoney(round2(gross))}</div><div class="lbl">Total spend (all reports)</div></div>
+      <div class="stat info"><div class="num">${fmtMoney(round2(vat))}</div><div class="lbl">Total VAT</div></div>
+      <div class="stat ok"><div class="num">${reports.length}</div><div class="lbl">Reports</div></div>
+      <div class="stat"><div class="num">${allLines.length}</div><div class="lbl">Expense lines</div></div>
+    </div>
+    <div class="form-row">
+      <div class="card"><div class="card-head"><h3>Spend by employee</h3><button class="btn btn-sm btn-outline" onclick="exportAgg('user')">Excel</button></div>
+        <div class="table-wrap"><table><thead><tr><th>Employee</th><th class="num">Spend</th></tr></thead><tbody>${tbl(byUser,'user',userName)}</tbody></table></div></div>
+      <div class="card"><div class="card-head"><h3>Spend by category</h3><button class="btn btn-sm btn-outline" onclick="exportAgg('cat')">Excel</button></div>
+        <div class="table-wrap"><table><thead><tr><th>Category</th><th class="num">Spend</th></tr></thead><tbody>${tbl(byCat)}</tbody></table></div></div>
+    </div>
+    <div class="card"><div class="card-head"><h3>Spend by department</h3><button class="btn btn-sm btn-outline" onclick="exportAgg('dept')">Excel</button></div>
+      <div class="table-wrap"><table><thead><tr><th>Department</th><th class="num">Spend</th></tr></thead><tbody>${tbl(byDept)}</tbody></table></div></div>`;
+  window._agg = { byUser, byCat, byDept };
+}
+function exportAgg(which){
+  const a = window._agg||{};
+  if(which==='user') downloadExcel('spend_by_employee.xls','ByEmployee',['Employee','Spend (£)'], Object.entries(a.byUser).sort((x,y)=>y[1]-x[1]).map(([k,v])=>[userName(k),v.toFixed(2)]),'Spend by employee');
+  if(which==='cat') downloadExcel('spend_by_category.xls','ByCategory',['Category','Spend (£)'], Object.entries(a.byCat).sort((x,y)=>y[1]-x[1]).map(([k,v])=>[k,v.toFixed(2)]),'Spend by category');
+  if(which==='dept') downloadExcel('spend_by_department.xls','ByDept',['Department','Spend (£)'], Object.entries(a.byDept).sort((x,y)=>y[1]-x[1]).map(([k,v])=>[k,v.toFixed(2)]),'Spend by department');
+}
+async function exportAllLines(){
+  const reports = await idbGetAll('reports'); const rById={}; reports.forEach(r=>rById[r.id]=r);
+  const lines = await idbGetAll('lines');
+  const cats = await refAll('categories'); const sups = await refAll('suppliers'); const vats = await refAll('vat_rates');
+  const headers = ['Report','Employee','Status','Type','Date','Supplier/Journey','Category','Nominal','Dept','VAT rate','Net','VAT','Gross','Description','Vehicle','Reg','Miles'];
+  const rows = lines.map(l=>{ const r=rById[l.report_id]||{}; const owner=state.usersById[r.user_id]; const cat=cats.find(c=>c.id===l.category_id);
+    return [ r.title||'', userName(r.user_id), STATUS_META[r.status]?.label||r.status, l.line_type, l.line_date,
+      l.line_type==='mileage'?`${l.postcode_from} > ${l.postcode_to}`:nameById(sups,l.supplier_id),
+      l.line_type==='mileage'?'Mileage':(cat?.name||''), l.line_type==='mileage'?'':(cat?.nominal_code||''),
+      '', nameById(vats,l.vat_rate_id), round2((l.amount||0)-(l.vat_amount||0)).toFixed(2),(l.vat_amount||0).toFixed(2),(l.amount||0).toFixed(2),
+      l.description, l.vehicle_type||'', l.vehicle_reg||'', l.distance_miles||'' ]; });
+  downloadExcel('all_expenses.xls','AllExpenses',headers,rows,'All expense lines');
+}
+
+// ═══════════════════════════════════════════════
+// ADMIN — generic reference data
+// ═══════════════════════════════════════════════
+const REF_DEFS = {
+  categories: { title:'Categories', singular:'category', fields:[['name','Name','text',true],['nominal_code','Nominal code','text',false]] },
+  departments: { title:'Departments', singular:'department', fields:[['name','Name','text',true],['dept_code','Department code','text',false]] },
+  vehicle_types: { title:'Vehicle Types', singular:'vehicle type', fields:[['name','Name','text',true]] },
+  vat_rates: { title:'VAT Rates', singular:'VAT rate', fields:[['name','Name','text',true],['percent','Percent (%)','number',true]] },
+  suppliers: { title:'Suppliers', singular:'supplier', fields:[['name','Name','text',true]] },
+};
+async function renderRef(c, store){
+  const def = REF_DEFS[store];
+  const rows = (await idbGetAll(store)).sort((a,b)=>(a.name||'').localeCompare(b.name||''));
+  setTopbar(`<button class="btn btn-accent" onclick="editRef('${store}','')">+ Add ${def.singular}</button>`);
+  c.innerHTML = `<div class="card"><div class="table-wrap"><table><thead><tr>
+    ${def.fields.map(f=>`<th>${f[1]}</th>`).join('')}<th>Status</th><th></th></tr></thead><tbody>
+    ${rows.map(r=>`<tr>${def.fields.map(f=>`<td>${esc(r[f[0]]??'')}${f[0]==='percent'?'%':''}</td>`).join('')}
+      <td>${r.active!==0?'<span class="badge b-green">Active</span>':'<span class="badge b-grey">Inactive</span>'}</td>
+      <td><button class="btn btn-sm btn-outline" onclick="editRef('${store}','${r.id}')">Edit</button>
+      <button class="btn btn-sm btn-outline" onclick="toggleRef('${store}','${r.id}')">${r.active!==0?'Disable':'Enable'}</button></td></tr>`).join('')
+    || `<tr><td colspan="${def.fields.length+2}" class="muted" style="text-align:center;padding:24px">None yet.</td></tr>`}
+  </tbody></table></div></div>`;
+}
+async function editRef(store, id){
+  const def = REF_DEFS[store]; const rec = id ? await idbGet(store, id) : {};
+  openModal(`<h2>${id?'Edit':'Add'} ${def.singular}</h2>
+    ${def.fields.map(f=>`<div class="form-group"><label class="${f[3]?'req':''}">${f[1]}</label><input id="rf-${f[0]}" type="${f[2]}" ${f[2]==='number'?'step="0.01"':''} value="${esc(rec[f[0]]??'')}"></div>`).join('')}
+    <div class="modal-actions"><button class="btn btn-outline" onclick="closeModal()">Cancel</button><button class="btn btn-primary" onclick="saveRef('${store}','${id}')">Save</button></div>`);
+}
+async function saveRef(store, id){
+  const def = REF_DEFS[store];
+  const rec = id ? await idbGet(store, id) : { id:uuid(), active:1 };
+  for (const f of def.fields){ const v=val('rf-'+f[0]); if(f[3]&&!v){ toast(f[1]+' is required','error'); return; } rec[f[0]] = f[2]==='number'? (v===''?0:Number(v)) : v; }
+  if (store==='suppliers' && !id){ rec.created_by=state.user.username; rec.created_at=nowISO(); }
+  await idbPut(store, rec); closeModal(); navigate(state.page);
+}
+async function toggleRef(store, id){ const r=await idbGet(store,id); r.active = r.active!==0?0:1; await idbPut(store,r); navigate(state.page); }
+
+// ── Mileage rates (custom admin) ──
+async function renderMileageRates(c){
+  const rows = (await idbGetAll('mileage_rates')).sort((a,b)=>(a.name||'').localeCompare(b.name||''));
+  const vats = await refAll('vat_rates');
+  setTopbar(`<button class="btn btn-accent" onclick="editMileageRate('')">+ Add rate</button>`);
+  c.innerHTML = `<div class="card"><p class="small muted" style="margin-bottom:10px">Payment rate is what the employee is paid per mile (e.g. HMRC AMAP 45p/25p). The advisory fuel rate (AFR) is used to calculate the reclaimable VAT element.</p>
+    <div class="table-wrap"><table><thead><tr><th>Name</th><th>Vehicle type</th><th class="num">Pay (p/mi)</th><th class="num">AFR (p/mi)</th><th>VAT rate</th><th>Effective</th><th>Status</th><th></th></tr></thead><tbody>
+    ${rows.map(r=>`<tr><td><strong>${esc(r.name)}</strong></td><td>${esc(r.vehicle_type||'Any')}</td>
+      <td class="num">${r.rate_pence}</td><td class="num">${r.afr_pence}</td><td>${esc(nameById(vats,r.vat_rate_id))}</td>
+      <td>${fmtDate(r.effective_from)}</td><td>${r.active!==0?'<span class="badge b-green">Active</span>':'<span class="badge b-grey">Inactive</span>'}</td>
+      <td><button class="btn btn-sm btn-outline" onclick="editMileageRate('${r.id}')">Edit</button>
+      <button class="btn btn-sm btn-outline" onclick="toggleRef('mileage_rates','${r.id}')">${r.active!==0?'Disable':'Enable'}</button></td></tr>`).join('')
+    || '<tr><td colspan="8" class="muted" style="text-align:center;padding:24px">None yet.</td></tr>'}
+  </tbody></table></div></div>`;
+}
+async function editMileageRate(id){
+  const rec = id ? await idbGet('mileage_rates', id) : { active:1 };
+  const vts = await ref('vehicle_types'); const vats = await refAll('vat_rates');
+  openModal(`<h2>${id?'Edit':'Add'} mileage rate</h2>
+    <div class="form-group"><label class="req">Name</label><input id="mr-name" value="${esc(rec.name||'')}" placeholder="e.g. HMRC Car (first 10,000 miles)"></div>
+    <div class="form-row"><div class="form-group"><label>Vehicle type</label><select id="mr-vt"><option value="">Any</option>${vts.map(v=>`<option ${rec.vehicle_type===v.name?'selected':''}>${esc(v.name)}</option>`).join('')}</select></div>
+      <div class="form-group"><label>Effective from</label><input type="date" id="mr-eff" value="${rec.effective_from||today()}"></div></div>
+    <div class="form-row-3">
+      <div class="form-group"><label class="req">Payment rate (p/mile)</label><input type="number" step="0.1" id="mr-rate" value="${rec.rate_pence??''}"></div>
+      <div class="form-group"><label>Advisory fuel rate (p/mile)</label><input type="number" step="0.1" id="mr-afr" value="${rec.afr_pence??0}"></div>
+      <div class="form-group"><label>VAT rate (for reclaim)</label><select id="mr-vat">${optionList(vats.map(v=>({value:v.id,label:v.name})), rec.vat_rate_id, true)}</select></div>
+    </div>
+    <div class="modal-actions"><button class="btn btn-outline" onclick="closeModal()">Cancel</button><button class="btn btn-primary" onclick="saveMileageRate('${id}')">Save</button></div>`);
+}
+async function saveMileageRate(id){
+  const name=val('mr-name'); const rate=numVal('mr-rate');
+  if(!name||!rate){ toast('Name and payment rate are required','error'); return; }
+  const rec = id ? await idbGet('mileage_rates', id) : { id:uuid(), active:1 };
+  Object.assign(rec,{ name, vehicle_type:val('mr-vt'), rate_pence:rate, afr_pence:numVal('mr-afr'), vat_rate_id:val('mr-vat'), effective_from:val('mr-eff') });
+  await idbPut('mileage_rates', rec); closeModal(); navigate('adm-mileage');
+}
+
+// ── Users (finance admin) ──
+async function renderUsers(c){
+  const users = (await idbGetAll('users')).sort((a,b)=>a.full_name.localeCompare(b.full_name));
+  const depts = await refAll('departments');
+  setTopbar(`<button class="btn btn-accent" onclick="editUser('')">+ Add user</button>`);
+  c.innerHTML = `<div class="card"><div class="table-wrap"><table><thead><tr><th>Name</th><th>Username</th><th>Roles</th><th>Department</th><th>1st approver</th><th>2nd approver</th><th>Status</th><th></th></tr></thead><tbody>
+    ${users.map(u=>`<tr><td><strong>${esc(u.full_name)}</strong><div class="small muted">${esc(u.email||'')}</div></td><td>${esc(u.username)}</td>
+      <td><div class="chips">${ROLES.map(r=>`<span class="chip ${u.roles.includes(r.key)?'on':''}">${r.label}</span>`).join('')}</div></td>
+      <td>${esc(nameById(depts,u.department_id))}</td><td>${esc(userName(u.approver1_id))}</td><td>${esc(userName(u.approver2_id))}</td>
+      <td>${u.active?'<span class="badge b-green">Active</span>':'<span class="badge b-grey">Disabled</span>'}</td>
+      <td><button class="btn btn-sm btn-outline" onclick="editUser('${u.id}')">Edit</button>
+      <button class="btn btn-sm btn-outline" onclick="resetPwd('${u.id}')">Reset PW</button></td></tr>`).join('')}
+  </tbody></table></div></div>`;
+}
+async function editUser(id){
+  const users = await idbGetAll('users');
+  const rec = id ? users.find(u=>u.id===id) : { roles:['employee'], active:1 };
+  const depts = await ref('departments');
+  const managers = users.filter(u=>u.roles.includes('manager'));
+  const finance = users.filter(u=>u.roles.includes('finance'));
+  openModal(`<h2>${id?'Edit':'Add'} user</h2>
+    <div class="form-row"><div class="form-group"><label class="req">Full name</label><input id="u-name" value="${esc(rec.full_name||'')}"></div>
+      <div class="form-group"><label class="req">Username</label><input id="u-username" value="${esc(rec.username||'')}" ${id?'readonly':''}></div></div>
+    <div class="form-row"><div class="form-group"><label>Email</label><input id="u-email" value="${esc(rec.email||'')}"></div>
+      <div class="form-group"><label>${id?'New password (leave blank to keep)':'Password'}</label><input id="u-pwd" type="text" placeholder="${id?'unchanged':'set a password'}"></div></div>
+    <div class="form-group"><label>Roles</label><div class="form-row" style="grid-template-columns:1fr 1fr">
+      ${ROLES.map(r=>`<label class="chk"><input type="checkbox" class="u-role" value="${r.key}" ${rec.roles?.includes(r.key)?'checked':''}> ${r.label}</label>`).join('')}
+    </div></div>
+    <div class="form-group"><label>Department</label><select id="u-dept">${optionList(depts.map(d=>({value:d.id,label:`${d.name} (${d.dept_code||''})`})), rec.department_id, true)}</select></div>
+    <fieldset><legend>Approval routing</legend>
+      <div class="form-row">
+        <div class="form-group"><label>1st approver (manager)</label><select id="u-app1">${optionList(managers.map(m=>({value:m.id,label:m.full_name})), rec.approver1_id, true)}</select><div class="small muted">Receives the report first.</div></div>
+        <div class="form-group"><label>2nd approver (finance)</label><select id="u-app2">${optionList(finance.map(m=>({value:m.id,label:m.full_name})), rec.approver2_id, true)}</select><div class="small muted">Final sign-off.</div></div>
+      </div></fieldset>
+    ${id?`<label class="chk"><input type="checkbox" id="u-active" ${rec.active?'checked':''}> Account active</label>`:''}
+    <div class="modal-actions"><button class="btn btn-outline" onclick="closeModal()">Cancel</button><button class="btn btn-primary" onclick="saveUser('${id}')">Save</button></div>`, true);
+}
+async function saveUser(id){
+  const name=val('u-name'), username=val('u-username').toLowerCase();
+  if(!name||!username){ toast('Name and username required','error'); return; }
+  const roles=[...document.querySelectorAll('.u-role:checked')].map(x=>x.value);
+  if(!roles.length){ toast('Select at least one role','error'); return; }
+  const users = await idbGetAll('users');
+  if(!id && users.some(u=>u.username===username)){ toast('Username already exists','error'); return; }
+  const rec = id ? users.find(u=>u.id===id) : { id:uuid(), created_at:nowISO(), must_change_password:true };
+  rec.full_name=name; rec.username=username; rec.email=val('u-email'); rec.roles=roles;
+  rec.department_id=val('u-dept'); rec.approver1_id=val('u-app1')||null; rec.approver2_id=val('u-app2')||null;
+  rec.active = id ? (document.getElementById('u-active')?.checked?1:0) : 1;
+  const pwd = val('u-pwd');
+  if (pwd) rec.password_hash = await sha256(pwd);
+  else if (!id) rec.password_hash = await sha256('changeme');
+  await idbPut('users', rec); await refreshCaches(); closeModal(); navigate('adm-users');
+  toast(id?'User updated':'User created');
+}
+async function resetPwd(id){
+  const np = prompt('Enter a new password for this user:'); if(!np) return;
+  const u = await idbGet('users', id); u.password_hash = await sha256(np); u.must_change_password=true; await idbPut('users', u);
+  toast('Password reset');
+}
+
+// ═══════════════════════════════════════════════
+// INIT
+// ═══════════════════════════════════════════════
+(async function init(){
+  try {
+    await openDB();
+    await seedDefaults();
+    const sid = sessionStorage.getItem('exp_session');
+    if (sid){ const u = await idbGet('users', sid); if (u && u.active){ state.user = u; await enterApp(); } }
+  } catch(err){ console.error('Init failed', err); toast('Failed to start: '+err.message,'error'); }
+})();
+</script>
+</body>
+</html>

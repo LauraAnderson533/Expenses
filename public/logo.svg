@@ -1,0 +1,20 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 640 200">
+  <!-- Komfort Partitioning corporate logo -->
+  <!-- Starburst icon -->
+  <g transform="translate(90,100)">
+    <!-- Charcoal spokes: horizontal left, top-left, bottom-left, bottom-right -->
+    <line x1="-62" y1="0"  x2="-8" y2="0"  stroke="#565A5C" stroke-width="12" stroke-linecap="round"/>
+    <line x1="-44" y1="-44" x2="-6" y2="-6" stroke="#565A5C" stroke-width="12" stroke-linecap="round"/>
+    <line x1="-44" y1="44"  x2="-6" y2="6"  stroke="#565A5C" stroke-width="12" stroke-linecap="round"/>
+    <line x1="44"  y1="44"  x2="6"  y2="6"  stroke="#565A5C" stroke-width="12" stroke-linecap="round"/>
+    <!-- Komfort Yellow spokes: vertical top, top-right, horizontal right, vertical bottom -->
+    <line x1="0" y1="-62" x2="0" y2="-8" stroke="#FDC82F" stroke-width="12" stroke-linecap="round"/>
+    <line x1="44" y1="-44" x2="6" y2="-6" stroke="#FDC82F" stroke-width="12" stroke-linecap="round"/>
+    <line x1="62" y1="0" x2="8" y2="0"  stroke="#FDC82F" stroke-width="12" stroke-linecap="round"/>
+    <line x1="0" y1="62" x2="0" y2="8"  stroke="#FDC82F" stroke-width="12" stroke-linecap="round"/>
+  </g>
+  <!-- "komfort" wordmark -->
+  <text x="185" y="118" font-family="Helvetica, Arial, sans-serif" font-size="96" font-weight="300" fill="#565A5C" letter-spacing="-1">komfort</text>
+  <!-- "partitioning solutions" strapline -->
+  <text x="188" y="158" font-family="Helvetica, Arial, sans-serif" font-size="28" font-weight="300" fill="#757677" letter-spacing="0.5">partitioning solutions</text>
+</svg>

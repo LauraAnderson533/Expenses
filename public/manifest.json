@@ -1,0 +1,13 @@
+{
+  "name": "Komfort Expenses System",
+  "short_name": "Expenses",
+  "description": "Expenses Management System for Komfort Partitioning",
+  "start_url": "/",
+  "display": "standalone",
+  "orientation": "any",
+  "background_color": "#F4F6F7",
+  "theme_color": "#565A5C",
+  "icons": [
+    { "src": "/logo.svg", "sizes": "any", "type": "image/svg+xml" }
+  ]
+}

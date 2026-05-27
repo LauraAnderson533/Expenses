@@ -1,0 +1,12 @@
+services:
+  - type: web
+    name: komfort-expenses-system
+    runtime: node
+    plan: free
+    region: frankfurt
+    buildCommand: npm install
+    startCommand: node server.js
+    healthCheckPath: /
+    envVars:
+      - key: JWT_SECRET
+        generateValue: true
