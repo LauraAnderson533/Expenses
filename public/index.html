@@ -214,7 +214,8 @@
     <div class="who">
       <div class="name" id="who-name"></div>
       <div class="role" id="who-role"></div>
-      <button class="btn btn-outline btn-sm" style="margin-top:10px;width:100%;border-color:rgba(255,255,255,.4);color:#fff" onclick="logout()">Sign out</button>
+      <button class="btn btn-outline btn-sm" style="margin-top:10px;width:100%;border-color:rgba(255,255,255,.4);color:#fff" onclick="changePassword()">Change password</button>
+      <button class="btn btn-outline btn-sm" style="margin-top:8px;width:100%;border-color:rgba(255,255,255,.4);color:#fff" onclick="logout()">Sign out</button>
     </div>
   </aside>
   <div class="main">
@@ -238,8 +239,8 @@
 // database.js so it can move to the Node backend unchanged.
 // ═══════════════════════════════════════════════════════════════
 const DB_NAME = 'KomfortExpenses';
-const DB_VERSION = 1;
-const STORES = ['users','categories','departments','vehicle_types','mileage_rates','suppliers','vat_rates','reports','lines','payment_runs','settings','audit_log'];
+const DB_VERSION = 2;
+const STORES = ['users','categories','departments','vehicle_types','mileage_rates','advisory_rates','suppliers','vat_rates','reports','lines','payment_runs','settings','audit_log'];
 let db = null;
 
 function openDB(){
@@ -247,7 +248,7 @@ function openDB(){
     const req = indexedDB.open(DB_NAME, DB_VERSION);
     req.onupgradeneeded = e => {
       const d = e.target.result;
-      const simple = ['categories','departments','vehicle_types','mileage_rates','suppliers','vat_rates','payment_runs'];
+      const simple = ['categories','departments','vehicle_types','mileage_rates','advisory_rates','suppliers','vat_rates','payment_runs'];
       simple.forEach(s => { if(!d.objectStoreNames.contains(s)) d.createObjectStore(s,{keyPath:'id'}); });
       if(!d.objectStoreNames.contains('users')){ const s=d.createObjectStore('users',{keyPath:'id'}); s.createIndex('username','username',{unique:true}); }
       if(!d.objectStoreNames.contains('reports')){ const s=d.createObjectStore('reports',{keyPath:'id'}); s.createIndex('user_id','user_id'); s.createIndex('status','status'); }
@@ -314,16 +315,10 @@ async function seedDefaults(){
   const vts = mk([['Car - Petrol'],['Car - Diesel'],['Car - Electric'],['Van'],['Motorcycle']],'vehicle_types',['name']);
   for (const v of vts) await idbPut('vehicle_types', v);
 
-  // Mileage rates: payment rate (AMAP) + advisory fuel rate (for VAT reclaim), linked to a VAT rate
-  const rates = [
-    ['HMRC Car (first 10,000 miles)','Car - Petrol',45,13],
-    ['HMRC Car (first 10,000 miles)','Car - Diesel',45,12],
-    ['HMRC Car EV (first 10,000 miles)','Car - Electric',45,8],
-    ['HMRC Car (over 10,000 miles)','Car - Petrol',25,13],
-    ['HMRC Car (over 10,000 miles)','Car - Diesel',25,12],
-    ['HMRC Motorcycle',null,24,0],
-  ];
-  for (const [name,vt,rate,afr] of rates) await idbPut('mileage_rates',{ id:uuid(), name, vehicle_type:vt, rate_pence:rate, afr_pence:afr, vat_rate_id:vatStd, effective_from:'2024-09-01', active:1 });
+  // Approved mileage rates (HMRC AMAP) — what the employee is PAID per mile
+  await seedApprovedRates();
+  // Advisory fuel rates (HMRC AFR) — used only to calculate the reclaimable VAT element
+  await seedAdvisoryRates(vatStd);
 
   const sups = ['Shell','BP','Esso','Premier Inn','Travelodge','Greggs','Costa Coffee','Screwfix','Toolstation','National Rail'];
   for (const s of sups) await idbPut('suppliers',{ id:uuid(), name:s, active:1, created_by:'system', created_at:nowISO() });
@@ -353,13 +348,48 @@ async function seedDefaults(){
   await idbPut('lines',{ id:uuid(), report_id:rptId, line_type:'expense', line_date:today(), description:'Lunch on site visit',
     supplier_id:shell, category_id:travelCat, amount:8.40, vat_rate_id:vats[2].id, vat_amount:0,
     postcode_from:'', postcode_to:'', distance_miles:0, vehicle_type:'', vehicle_reg:'', mileage_rate_id:'', receipts:[], created_at:nowISO() });
-  const carRate = (await idbGetAll('mileage_rates')).find(r=>r.name.includes('first 10,000')&&r.vehicle_type==='Car - Petrol');
+  const carRate = (await idbGetAll('mileage_rates')).find(r=>r.name.includes('first 10,000')&&r.vehicle_type==='Car');
+  const petrolAfr = (await idbGetAll('advisory_rates')).find(a=>/petrol/i.test(a.fuel_type||a.name));
   await idbPut('lines',{ id:uuid(), report_id:rptId, line_type:'mileage', line_date:today(), description:'Leeds office to Crawley site',
-    supplier_id:'', category_id:'', amount:+(48*0.45).toFixed(2), vat_rate_id:carRate.vat_rate_id, vat_amount:+(48*carRate.afr_pence/100*(20/120)).toFixed(2),
+    supplier_id:'', category_id:'', amount:+(48*0.45).toFixed(2), vat_rate_id:'', vat_amount:+(48*(petrolAfr?.afr_pence||12)/100*(20/120)).toFixed(2),
     postcode_from:'LS10 1AB', postcode_to:'RH10 8GH', distance_miles:48, vehicle_type:'Car - Petrol', vehicle_reg:'YK19 ABC',
-    mileage_rate_id:carRate.id, receipts:[], created_at:nowISO() });
+    mileage_rate_id:carRate?.id||'', advisory_rate_id:petrolAfr?.id||'', receipts:[], created_at:nowISO() });
 
   await logAction('seed',{ detail:'Initial demo data created' });
+}
+
+// Approved mileage rates (HMRC AMAP) — paid to the employee, keyed by vehicle type
+async function seedApprovedRates(){
+  const rates = [
+    ['HMRC Car/Van (first 10,000 miles)','Car',45],
+    ['HMRC Car/Van (over 10,000 miles)','Car',25],
+    ['HMRC Van','Van',45],
+    ['HMRC Motorcycle','Motorcycle',24],
+    ['HMRC Bicycle','Bicycle',20],
+  ];
+  for (const [name,vt,rate] of rates) await idbPut('mileage_rates',{ id:uuid(), name, vehicle_type:vt, rate_pence:rate, effective_from:'2024-09-01', active:1 });
+}
+// Advisory fuel rates (HMRC AFR) — only used to derive the reclaimable VAT element
+async function seedAdvisoryRates(vatStdId){
+  if (!vatStdId){ const v=(await idbGetAll('vat_rates')).find(x=>/standard/i.test(x.name)); vatStdId=v?.id; }
+  const ars = [
+    ['Petrol up to 1400cc','Petrol',12],
+    ['Petrol 1401–2000cc','Petrol',14],
+    ['Petrol over 2000cc','Petrol',22],
+    ['Diesel up to 1600cc','Diesel',11],
+    ['Diesel 1601–2000cc','Diesel',13],
+    ['Diesel over 2000cc','Diesel',17],
+    ['Electric (AER)','Electric',7],
+  ];
+  for (const [name,fuel,afr] of ars) await idbPut('advisory_rates',{ id:uuid(), name, fuel_type:fuel, afr_pence:afr, vat_rate_id:vatStdId, effective_from:'2024-09-01', active:1 });
+}
+// Migration / top-up for existing local databases (split out advisory from old combined rates)
+async function ensureSplitRates(){
+  const adv = await idbGetAll('advisory_rates');
+  if (adv.length === 0) await seedAdvisoryRates();
+  // Strip the legacy afr_pence/vat_rate_id off any old combined approved rates so the table is clean
+  const mrs = await idbGetAll('mileage_rates');
+  for (const r of mrs){ if ('afr_pence' in r || 'vat_rate_id' in r){ delete r.afr_pence; delete r.vat_rate_id; await idbPut('mileage_rates', r); } }
 }
 
 // ═══════════════════════════════════════════════
@@ -394,12 +424,38 @@ async function enterApp(){
   document.getElementById('who-role').textContent = state.user.roles.map(r=>ROLES.find(x=>x.key===r)?.label||r).join(' · ');
   await buildNav();
   navigate(isFinance() ? 'dashboard' : 'my-expenses');
+  if (state.user.must_change_password) changePassword(true);
 }
 function logout(){
   state.user = null; sessionStorage.removeItem('exp_session');
   document.getElementById('app').classList.remove('active');
   document.getElementById('login-view').style.display = 'flex';
   document.getElementById('login-form').reset();
+}
+
+// Self-service password change — available to every logged-in user
+function changePassword(forced){
+  openModal(`<h2>Change password</h2>
+    <div class="modal-sub">${forced ? 'Your account uses a temporary password set by Finance. Please choose a new password to continue.' : 'Update the password for your account ('+esc(state.user.username)+').'}</div>
+    <div class="form-group"><label class="req">Current password</label><input type="password" id="cp-current" autocomplete="current-password"></div>
+    <div class="form-group"><label class="req">New password</label><input type="password" id="cp-new" autocomplete="new-password"><div class="small muted">At least 6 characters.</div></div>
+    <div class="form-group"><label class="req">Confirm new password</label><input type="password" id="cp-confirm" autocomplete="new-password"></div>
+    <div class="modal-actions">${forced?'':'<button class="btn btn-outline" onclick="closeModal()">Cancel</button>'}
+      <button class="btn btn-primary" onclick="saveChangePassword()">Update password</button></div>`);
+}
+async function saveChangePassword(){
+  const cur = val('cp-current'), np = val('cp-new'), conf = val('cp-confirm');
+  if(!cur || !np || !conf){ toast('All fields are required','error'); return; }
+  if(np.length < 6){ toast('New password must be at least 6 characters','error'); return; }
+  if(np !== conf){ toast('New passwords do not match','error'); return; }
+  const fresh = await idbGet('users', state.user.id);
+  if(await sha256(cur) !== fresh.password_hash){ toast('Current password is incorrect','error'); return; }
+  if(await sha256(np) === fresh.password_hash){ toast('New password must be different from the current one','error'); return; }
+  fresh.password_hash = await sha256(np); fresh.must_change_password = false;
+  await idbPut('users', fresh);
+  state.user = fresh;
+  await logAction('password_changed');
+  closeModal(); toast('Password updated');
 }
 async function refreshCaches(){
   const users = await idbGetAll('users');
@@ -417,6 +473,7 @@ function navItems(){
   if (isManager()) items.push({ id:'approvals', label:'Approvals', ic:'✔', badge:'mgr', sec:'Approve' });
   if (isFinance()){
     items.push({ id:'finance-approvals', label:'Finance Approvals', ic:'✔', badge:'fin', sec:'Finance' });
+    items.push({ id:'all-claims', label:'All Claims', ic:'≡' });
     items.push({ id:'payment-runs', label:'Payment Runs', ic:'⇄' });
     items.push({ id:'analytics', label:'Reports', ic:'▣' });
     items.push({ id:'adm-users', label:'Users', ic:'⚷', sec:'Administration' });
@@ -424,6 +481,7 @@ function navItems(){
     items.push({ id:'adm-departments', label:'Departments', ic:'▥' });
     items.push({ id:'adm-vehicles', label:'Vehicle Types', ic:'⛐' });
     items.push({ id:'adm-mileage', label:'Mileage Rates', ic:'⛽' });
+    items.push({ id:'adm-advisory', label:'Advisory Fuel Rates', ic:'⛽' });
     items.push({ id:'adm-vat', label:'VAT Rates', ic:'%' });
     items.push({ id:'adm-suppliers', label:'Suppliers', ic:'☷' });
   }
@@ -453,9 +511,9 @@ async function computeBadges(){
 }
 const PAGE_TITLES = {
   dashboard:'Dashboard', 'my-expenses':'My Expense Reports', 'my-cc':'Company Credit Card', approvals:'Approvals',
-  'finance-approvals':'Finance Approvals', 'payment-runs':'Payment Runs', analytics:'Reports',
+  'finance-approvals':'Finance Approvals', 'all-claims':'All Claims', 'payment-runs':'Payment Runs', analytics:'Reports',
   'adm-users':'Users', 'adm-categories':'Categories', 'adm-departments':'Departments', 'adm-vehicles':'Vehicle Types',
-  'adm-mileage':'Mileage Rates', 'adm-vat':'VAT Rates', 'adm-suppliers':'Suppliers'
+  'adm-mileage':'Mileage Rates', 'adm-advisory':'Advisory Fuel Rates', 'adm-vat':'VAT Rates', 'adm-suppliers':'Suppliers'
 };
 async function navigate(page){
   state.page = page; state.currentReportId = null;
@@ -473,6 +531,7 @@ async function navigate(page){
       case 'my-cc': await renderReportList(c,'creditcard'); break;
       case 'approvals': await renderApprovals(c); break;
       case 'finance-approvals': await renderFinanceApprovals(c); break;
+      case 'all-claims': await renderAllClaims(c); break;
       case 'payment-runs': await renderPaymentRuns(c); break;
       case 'analytics': await renderAnalytics(c); break;
       case 'adm-users': await renderUsers(c); break;
@@ -480,6 +539,7 @@ async function navigate(page){
       case 'adm-departments': await renderRef(c,'departments'); break;
       case 'adm-vehicles': await renderRef(c,'vehicle_types'); break;
       case 'adm-mileage': await renderMileageRates(c); break;
+      case 'adm-advisory': await renderAdvisoryRates(c); break;
       case 'adm-vat': await renderRef(c,'vat_rates'); break;
       case 'adm-suppliers': await renderRef(c,'suppliers'); break;
       default: c.innerHTML = '<div class="empty">Page not found</div>';
@@ -541,6 +601,8 @@ function lineTotals(lines){
 
 // ── Receipts (file/camera capture) ──
 let _lineReceipts = [];
+let _vatManual = false;   // expense VAT manually overridden this modal session
+let _mvatManual = false;  // mileage VAT manually overridden this modal session
 function receiptsInputHtml(){
   return `<div class="form-group"><label>Receipts (photo or file)</label>
     <input type="file" id="rc-input" accept="image/*,application/pdf" multiple capture="environment" onchange="addReceipts(event)">
@@ -603,8 +665,8 @@ async function renderDashboard(c){
     <div class="stat-grid">
       <div class="stat warn clickable" onclick="navigate('finance-approvals')"><div class="num">${awaitingFin.length}</div><div class="lbl">Awaiting finance approval</div></div>
       <div class="stat info clickable" onclick="navigate('payment-runs')"><div class="num">${fmtMoney(sum(awaitingReimb))}</div><div class="lbl">Awaiting reimbursement (${awaitingReimb.length})</div></div>
-      <div class="stat ok"><div class="num">${fmtMoney(sum(reimbThisItems))}</div><div class="lbl">Reimbursed to date</div></div>
-      <div class="stat"><div class="num">${all.length}</div><div class="lbl">Total reports</div></div>
+      <div class="stat ok clickable" onclick="window._acStatus='reimbursed';navigate('all-claims')"><div class="num">${fmtMoney(sum(reimbThisItems))}</div><div class="lbl">Reimbursed to date</div></div>
+      <div class="stat clickable" onclick="window._acStatus='';navigate('all-claims')"><div class="num">${all.length}</div><div class="lbl">Total reports</div></div>
     </div>
     <div class="card">
       <div class="card-head"><h3>Recent activity</h3></div>
@@ -675,7 +737,9 @@ async function openReport(id){
   const t = lineTotals(lines);
   const owner = state.usersById[r.user_id];
   const isOwner = r.user_id === state.user.id;
-  const editable = isOwner && (r.status==='unsubmitted' || r.status==='rejected');
+  const ownerEditable = isOwner && (r.status==='unsubmitted' || r.status==='rejected');
+  const financeEditing = isFinance() && !ownerEditable;   // finance may edit any claim at any stage
+  const editable = ownerEditable || isFinance();
   const isCCt = r.type==='creditcard';
   const cats = await ref('categories'); const sups = await refAll('suppliers'); const vts = await ref('vehicle_types'); const vats = await refAll('vat_rates'); const mrs = await refAll('mileage_rates');
   const catName = id2 => cats.find(c=>c.id===id2)?.name || '—';
@@ -704,6 +768,7 @@ async function openReport(id){
 
   c_html(`
     ${r.status==='rejected' ? `<div class="card" style="border-left:5px solid var(--danger)"><strong style="color:var(--danger)">Returned for changes</strong><div class="small">${esc(r.rejection_note)||'No note provided.'} — please amend and resubmit.</div></div>`:''}
+    ${financeEditing ? `<div class="card" style="border-left:5px solid var(--info)"><strong style="color:var(--info)">Finance edit mode</strong><div class="small">You are editing ${esc(owner?.full_name||'this employee')}'s claim (status: ${STATUS_META[r.status]?.label||r.status}). Changes are saved immediately and do not change the approval status.</div></div>`:''}
     <div class="totbar">
       <div class="t"><div class="v">${fmtMoney(t.gross)}</div><div class="l">Total claim</div></div>
       <div class="t"><div class="v">${fmtMoney(t.net)}</div><div class="l">Net</div></div>
@@ -719,7 +784,7 @@ async function openReport(id){
     </div>
     ${approvalTrailHtml(r)}
     <div class="card"><div style="display:flex;gap:10px;flex-wrap:wrap">
-      ${editable && isOwner ? `<button class="btn btn-success" onclick="submitReport('${r.id}')" ${t.count?'':'disabled'}>Submit for approval</button>`:''}
+      ${ownerEditable ? `<button class="btn btn-success" onclick="submitReport('${r.id}')" ${t.count?'':'disabled'}>Submit for approval</button>`:''}
       ${editable ? `<button class="btn btn-outline" onclick="renameReport('${r.id}')">Rename</button>
       <button class="btn btn-danger" onclick="deleteReport('${r.id}')">Delete report</button>`:''}
       <button class="btn btn-info" style="margin-left:auto" onclick="exportReport('${r.id}')">Export to Excel</button>
@@ -796,7 +861,10 @@ async function openExpenseLineModal(line){
       <div class="form-group"><label class="req">Amount (gross £)</label><input type="number" step="0.01" id="el-amount" value="${line?.amount||''}" oninput="recalcExpenseVat()"></div>
       <div class="form-group"><label>VAT rate</label><select id="el-vat-rate" onchange="recalcExpenseVat()">${vatOpts}</select></div>
     </div>
-    <div class="form-row"><div class="form-group"><label>VAT (£)</label><input type="number" step="0.01" id="el-vat" value="${line?.vat_amount||''}"><div class="small muted">Auto-calculated from gross &amp; rate; editable.</div></div>
+    <div class="form-row"><div class="form-group"><label>VAT (£)</label>
+        <div style="display:flex;gap:6px"><input type="number" step="0.01" id="el-vat" value="${line?.vat_amount??''}" oninput="_vatManual=true" style="flex:1">
+        <button type="button" class="btn btn-sm btn-outline" title="Recalculate from rate" onclick="_vatManual=false;recalcExpenseVat()">↻ Auto</button></div>
+        <div class="small muted">Auto-calculated, but you can type any VAT amount — it won't be overwritten.</div></div>
       <div class="form-group"><label>Description</label><input id="el-desc" value="${esc(line?.description||'')}"></div></div>
     ${receiptsInputHtml()}
     <div class="modal-actions">
@@ -805,10 +873,12 @@ async function openExpenseLineModal(line){
       <button class="btn btn-primary" onclick="saveExpenseLine('${line?.id||''}')">Save expense</button>
     </div>`, true);
   renderReceiptThumbs();
+  _vatManual = false;
   if(!line) recalcExpenseVat();
 }
 function toggleNewSupplier(){ const i=document.getElementById('el-supplier-new'); i.classList.toggle('hidden'); if(!i.classList.contains('hidden')){ document.getElementById('el-supplier').value=''; i.focus(); } }
 async function recalcExpenseVat(){
+  if (_vatManual) return;   // respect a manually-entered VAT amount
   const amt = numVal('el-amount'); const vid = val('el-vat-rate');
   const vats = await refAll('vat_rates'); const v = vats.find(x=>x.id===vid);
   const pct = v ? Number(v.percent) : 0;
@@ -837,8 +907,10 @@ async function addMileageLine(){ openMileageLineModal(null); }
 async function openMileageLineModal(line){
   _lineReceipts = line ? [...(line.receipts||[])] : [];
   const vts = await ref('vehicle_types'); const mrs = (await refAll('mileage_rates')).filter(r=>r.active!==0);
+  const ars = (await refAll('advisory_rates')).filter(r=>r.active!==0);
   const vtOpts = optionList(vts.map(v=>({value:v.name,label:v.name})), line?.vehicle_type, true);
   const rateOpts = optionList(mrs.map(r=>({value:r.id,label:`${r.name}${r.vehicle_type?' — '+r.vehicle_type:''} (${r.rate_pence}p/mi)`})), line?.mileage_rate_id, true);
+  const advOpts = optionList(ars.map(r=>({value:r.id,label:`${r.name} (${r.afr_pence}p/mi)`})), line?.advisory_rate_id, true);
   openModal(`<h2>${line?'Edit':'Add'} mileage</h2>
     <div class="form-row"><div class="form-group"><label class="req">Date</label><input type="date" id="ml-date" value="${line?.line_date||today()}"></div>
       <div class="form-group"><label>Vehicle reg</label><input id="ml-reg" value="${esc(line?.vehicle_reg||'')}" placeholder="e.g. YK19 ABC"></div></div>
@@ -848,43 +920,55 @@ async function openMileageLineModal(line){
       <div class="form-group"><label class="req">Distance (miles)</label><input type="number" step="0.1" id="ml-dist" value="${line?.distance_miles||''}" oninput="recalcMileage()">
         <button type="button" class="btn btn-sm btn-outline" style="margin-top:6px" onclick="estimateDistance()">↻ Estimate from postcodes</button></div>
     </div>
-    <div class="form-row">
+    <div class="form-row-3">
       <div class="form-group"><label>Vehicle type</label><select id="ml-vehicle" onchange="onVehicleChange()">${vtOpts}</select></div>
-      <div class="form-group"><label class="req">Mileage rate</label><select id="ml-rate" onchange="recalcMileage()">${rateOpts}</select></div>
+      <div class="form-group"><label class="req">Approved mileage rate</label><select id="ml-rate" onchange="recalcMileage()">${rateOpts}</select><div class="small muted">Sets the amount paid.</div></div>
+      <div class="form-group"><label>Advisory fuel rate</label><select id="ml-advisory" onchange="recalcMileage()">${advOpts}</select><div class="small muted">Sets the reclaimable VAT.</div></div>
     </div>
     <div class="form-group"><label>Description</label><input id="ml-desc" value="${esc(line?.description||'')}" placeholder="Reason for journey"></div>
-    <div class="totbar" style="margin-top:4px"><div class="t"><div class="v" id="ml-amount-d">£0.00</div><div class="l">Amount payable</div></div>
-      <div class="t"><div class="v" id="ml-vat-d">£0.00</div><div class="l">VAT (reclaimable, from advisory fuel rate)</div></div></div>
+    <div class="totbar" style="margin-top:4px;align-items:center">
+      <div class="t"><div class="v" id="ml-amount-d">£0.00</div><div class="l">Amount payable</div></div>
+      <div class="t"><label class="small" style="color:rgba(255,255,255,.7);display:block;margin-bottom:2px">VAT (£) — editable</label>
+        <div style="display:flex;gap:6px"><input type="number" step="0.01" id="ml-vat" value="${line?.vat_amount??''}" oninput="_mvatManual=true" style="width:120px">
+        <button type="button" class="btn btn-sm btn-outline" style="border-color:rgba(255,255,255,.5);color:#fff" onclick="_mvatManual=false;recalcMileage()">↻ Auto</button></div></div>
+    </div>
     ${receiptsInputHtml()}
     <div class="modal-actions"><button class="btn btn-outline" onclick="closeModal()">Cancel</button>
       <button class="btn btn-primary" onclick="saveMileageLine('${line?.id||''}')">Save mileage</button></div>`, true);
   renderReceiptThumbs();
+  _mvatManual = false;
   recalcMileage();
 }
 async function onVehicleChange(){
-  // auto-pick a matching rate for the chosen vehicle type if current doesn't match
-  const vt = val('ml-vehicle'); const mrs = (await refAll('mileage_rates')).filter(r=>r.active!==0);
+  // auto-pick a matching approved rate (by vehicle type) and advisory rate (by fuel) if they don't already match
+  const vt = val('ml-vehicle');
+  const mrs = (await refAll('mileage_rates')).filter(r=>r.active!==0);
+  const ars = (await refAll('advisory_rates')).filter(r=>r.active!==0);
   const sel = document.getElementById('ml-rate');
   const cur = mrs.find(r=>r.id===sel.value);
-  if (!cur || (cur.vehicle_type && cur.vehicle_type!==vt)){
-    const match = mrs.find(r=>r.vehicle_type===vt);
+  if (!cur || (cur.vehicle_type && !vt.startsWith(cur.vehicle_type))){
+    const match = mrs.find(r=>r.vehicle_type && vt.startsWith(r.vehicle_type));
     if (match) sel.value = match.id;
+  }
+  const aSel = document.getElementById('ml-advisory');
+  if (aSel && !aSel.value){
+    const fuel = (vt.split('-')[1]||'').trim();   // 'Car - Petrol' -> 'Petrol'
+    const am = ars.find(a=>fuel && new RegExp(fuel,'i').test(a.fuel_type||a.name));
+    if (am) aSel.value = am.id;
   }
   recalcMileage();
 }
 async function recalcMileage(){
-  const dist = numVal('ml-dist'); const rid = val('ml-rate');
-  const mrs = await refAll('mileage_rates'); const vats = await refAll('vat_rates');
-  const r = mrs.find(x=>x.id===rid);
+  const dist = numVal('ml-dist'); const rid = val('ml-rate'); const aid = val('ml-advisory');
+  const mrs = await refAll('mileage_rates'); const ars = await refAll('advisory_rates'); const vats = await refAll('vat_rates');
+  const r = mrs.find(x=>x.id===rid); const a = ars.find(x=>x.id===aid);
   let amount=0, vat=0;
-  if (r){
-    amount = round2(dist * Number(r.rate_pence)/100);
-    const v = vats.find(x=>x.id===r.vat_rate_id); const pct = v?Number(v.percent):0;
-    if (pct>0 && r.afr_pence>0) vat = round2(dist * Number(r.afr_pence)/100 * (pct/(100+pct)));
-  }
-  document.getElementById('ml-amount-d').textContent = fmtMoney(amount);
-  document.getElementById('ml-vat-d').textContent = fmtMoney(vat);
-  return { amount, vat, rate:r };
+  if (r) amount = round2(dist * Number(r.rate_pence)/100);
+  if (a){ const v = vats.find(x=>x.id===a.vat_rate_id); const pct = v?Number(v.percent):20; if (Number(a.afr_pence)>0) vat = round2(dist * Number(a.afr_pence)/100 * (pct/(100+pct))); }
+  const ad = document.getElementById('ml-amount-d'); if (ad) ad.textContent = fmtMoney(amount);
+  if (!_mvatManual){ const vf = document.getElementById('ml-vat'); if (vf) vf.value = vat.toFixed(2); }
+  const finalVat = _mvatManual ? round2(numVal('ml-vat')) : vat;
+  return { amount, vat: finalVat, rate:r };
 }
 async function estimateDistance(){
   const a = val('ml-from'), b = val('ml-to');
@@ -904,13 +988,14 @@ function haversine(lat1,lon1,lat2,lon2){ const R=3958.8, toR=x=>x*Math.PI/180; c
 async function saveMileageLine(id){
   const dist = numVal('ml-dist'); const rid = val('ml-rate');
   if(!val('ml-date')||!dist||!rid){ toast('Date, distance and mileage rate are required','error'); return; }
-  const { amount, vat } = await recalcMileage();
+  const { amount } = await recalcMileage();
+  const vat = round2(numVal('ml-vat'));
   const line = {
     id: id||uuid(), report_id: state.currentReportId, line_type:'mileage',
     line_date: val('ml-date'), description: val('ml-desc'),
-    supplier_id:'', category_id:'', amount: round2(amount), vat_rate_id:'', vat_amount: round2(vat),
+    supplier_id:'', category_id:'', amount: round2(amount), vat_rate_id:'', vat_amount: vat,
     postcode_from: val('ml-from'), postcode_to: val('ml-to'), distance_miles: dist,
-    vehicle_type: val('ml-vehicle'), vehicle_reg: val('ml-reg'), mileage_rate_id: rid,
+    vehicle_type: val('ml-vehicle'), vehicle_reg: val('ml-reg'), mileage_rate_id: rid, advisory_rate_id: val('ml-advisory'),
     receipts: _lineReceipts, created_at: nowISO()
   };
   await idbPut('lines', line); closeModal(); openReport(state.currentReportId);
@@ -1050,6 +1135,40 @@ async function rejectReport(id){
 }
 
 // ═══════════════════════════════════════════════
+// ALL CLAIMS (finance — view & edit any report)
+// ═══════════════════════════════════════════════
+async function renderAllClaims(c){
+  const reports = await idbGetAll('reports');
+  for (const r of reports) r._t = lineTotals(await reportLines(r.id));
+  const users = (await idbGetAll('users')).sort((a,b)=>a.full_name.localeCompare(b.full_name));
+  const fOwner = window._acOwner||''; const fStatus = window._acStatus||''; const fType = window._acType||'';
+  let rows = reports;
+  if (fOwner) rows = rows.filter(r=>r.user_id===fOwner);
+  if (fType) rows = rows.filter(r=>r.type===fType);
+  if (fStatus) rows = rows.filter(r=>tabGroup(r.status)===fStatus);
+  rows.sort((a,b)=>(b.created_at||'').localeCompare(a.created_at||''));
+  setTopbar(`<button class="btn btn-info" onclick="exportAllLines()">Export all (Excel)</button>`);
+  c.innerHTML = `
+    <div class="toolbar">
+      <select onchange="window._acOwner=this.value;navigate('all-claims')"><option value="">All employees</option>${users.map(u=>`<option value="${u.id}" ${fOwner===u.id?'selected':''}>${esc(u.full_name)}</option>`).join('')}</select>
+      <select onchange="window._acType=this.value;navigate('all-claims')"><option value="">All types</option><option value="expense" ${fType==='expense'?'selected':''}>Expense</option><option value="creditcard" ${fType==='creditcard'?'selected':''}>Credit card</option></select>
+      <select onchange="window._acStatus=this.value;navigate('all-claims')"><option value="">All statuses</option>
+        <option value="unsubmitted" ${fStatus==='unsubmitted'?'selected':''}>Unsubmitted / Returned</option>
+        <option value="awaiting" ${fStatus==='awaiting'?'selected':''}>Awaiting approval</option>
+        <option value="reimbursement" ${fStatus==='reimbursement'?'selected':''}>Awaiting reimbursement</option>
+        <option value="approved" ${fStatus==='approved'?'selected':''}>Approved (CC)</option>
+        <option value="reimbursed" ${fStatus==='reimbursed'?'selected':''}>Reimbursed</option></select>
+      <span class="muted small grow">${rows.length} claim(s) — click any row to view or edit</span>
+    </div>
+    <div class="card"><div class="table-wrap"><table><thead><tr><th>Report</th><th>Employee</th><th>Type</th><th>Status</th><th class="num">Net</th><th class="num">VAT</th><th class="num">Total</th><th></th></tr></thead><tbody>
+      ${rows.map(r=>`<tr class="clickable" onclick="openReport('${r.id}')"><td><strong>${esc(r.title)}</strong><div class="small muted">${fmtDate(r.created_at)}</div></td>
+        <td>${esc(userName(r.user_id))}</td><td>${r.type==='creditcard'?'Credit card':'Expense'}</td><td>${statusBadge(r.status)}</td>
+        <td class="num">${fmtMoney(r._t.net)}</td><td class="num">${fmtMoney(r._t.vat)}</td><td class="num"><strong>${fmtMoney(r._t.gross)}</strong></td><td>›</td></tr>`).join('')
+      || '<tr><td colspan="8" class="muted" style="text-align:center;padding:24px">No claims match the filters.</td></tr>'}
+    </tbody></table></div></div>`;
+}
+
+// ═══════════════════════════════════════════════
 // PAYMENT RUNS (finance)
 // ═══════════════════════════════════════════════
 async function renderPaymentRuns(c){
@@ -1075,9 +1194,9 @@ async function renderPaymentRuns(c){
       </tbody></table></div></div>
     <div class="card"><div class="card-head"><h3>Payment run history</h3></div>
       <div class="table-wrap"><table><thead><tr><th>Reference</th><th>Date</th><th>By</th><th>Reports</th><th class="num">Total</th><th></th></tr></thead><tbody>
-        ${runs.map(p=>`<tr><td><strong>${esc(p.reference)}</strong></td><td>${fmtDate(p.run_date)}</td><td>${esc(userName(p.created_by))}</td>
+        ${runs.map(p=>`<tr class="clickable" onclick="paymentRunDetail('${p.id}')"><td><strong>${esc(p.reference)}</strong></td><td>${fmtDate(p.run_date)}</td><td>${esc(userName(p.created_by))}</td>
           <td>${(p.report_ids||[]).length}</td><td class="num">${fmtMoney(p.total)}</td>
-          <td><button class="btn btn-sm btn-outline" onclick="exportPaymentRun('${p.id}')">Excel</button></td></tr>`).join('')
+          <td><button class="btn btn-sm btn-outline" onclick="event.stopPropagation();exportPaymentRun('${p.id}')">Excel</button></td></tr>`).join('')
         || '<tr><td colspan="6" class="muted" style="text-align:center;padding:24px">No payment runs yet.</td></tr>'}
       </tbody></table></div></div>`;
 }
@@ -1115,6 +1234,16 @@ async function markReimbursed(id){
   await logAction('reimbursed',{report_id:id});
   toast('Marked reimbursed'); navigate('payment-runs');
 }
+async function paymentRunDetail(id){
+  const p = await idbGet('payment_runs', id);
+  const rows = [];
+  for (const rid of p.report_ids||[]){ const r=await idbGet('reports',rid); if(!r) continue; const t=lineTotals(await reportLines(rid));
+    rows.push(`<tr class="clickable" onclick="closeModal();openReport('${r.id}')"><td>${esc(userName(r.user_id))}</td><td>${esc(r.title)}</td><td class="num">${fmtMoney(t.net)}</td><td class="num">${fmtMoney(t.vat)}</td><td class="num"><strong>${fmtMoney(t.gross)}</strong></td><td>›</td></tr>`); }
+  openModal(`<h2>Payment run ${esc(p.reference)}</h2><div class="modal-sub">${fmtDate(p.run_date)} · raised by ${esc(userName(p.created_by))} · ${(p.report_ids||[]).length} report(s)</div>
+    <div class="table-wrap"><table><thead><tr><th>Employee</th><th>Report</th><th class="num">Net</th><th class="num">VAT</th><th class="num">Total</th><th></th></tr></thead><tbody>${rows.join('')}
+    <tr><td colspan="4"><strong>Total paid</strong></td><td class="num"><strong>${fmtMoney(p.total)}</strong></td><td></td></tr></tbody></table></div>
+    <div class="modal-actions"><button class="btn btn-info" onclick="exportPaymentRun('${p.id}')">Export to Excel</button><button class="btn btn-outline" onclick="closeModal()">Close</button></div>`, true);
+}
 async function exportPaymentRun(id){
   const p = await idbGet('payment_runs', id);
   const rows = [];
@@ -1144,24 +1273,42 @@ async function renderAnalytics(c){
       const dk = depts.find(d=>d.id===owner?.department_id)?.name||'Unassigned'; byDept[dk]=(byDept[dk]||0)+g;
     });
   });
-  const tbl = (obj, keyName, fmtKey) => Object.entries(obj).sort((a,b)=>b[1]-a[1]).map(([k,v])=>`<tr><td>${esc(fmtKey?fmtKey(k):k)}</td><td class="num">${fmtMoney(v)}</td></tr>`).join('')||'<tr><td colspan="2" class="muted">No data</td></tr>';
+  const tbl = (obj, kind, fmtKey) => Object.entries(obj).sort((a,b)=>b[1]-a[1]).map(([k,v])=>`<tr class="clickable" onclick="drillAgg('${kind}','${encodeURIComponent(k)}')"><td>${esc(fmtKey?fmtKey(k):k)}</td><td class="num">${fmtMoney(v)}</td><td>›</td></tr>`).join('')||'<tr><td colspan="3" class="muted">No data</td></tr>';
   setTopbar(`<button class="btn btn-accent" onclick="exportAllLines()">Export all expenses (Excel)</button>`);
   c.innerHTML = `
     <div class="stat-grid">
-      <div class="stat"><div class="num">${fmtMoney(round2(gross))}</div><div class="lbl">Total spend (all reports)</div></div>
+      <div class="stat clickable" onclick="window._acStatus='';navigate('all-claims')"><div class="num">${fmtMoney(round2(gross))}</div><div class="lbl">Total spend (all reports)</div></div>
       <div class="stat info"><div class="num">${fmtMoney(round2(vat))}</div><div class="lbl">Total VAT</div></div>
-      <div class="stat ok"><div class="num">${reports.length}</div><div class="lbl">Reports</div></div>
-      <div class="stat"><div class="num">${allLines.length}</div><div class="lbl">Expense lines</div></div>
+      <div class="stat ok clickable" onclick="window._acStatus='';navigate('all-claims')"><div class="num">${reports.length}</div><div class="lbl">Reports</div></div>
+      <div class="stat clickable" onclick="exportAllLines()"><div class="num">${allLines.length}</div><div class="lbl">Expense lines · export</div></div>
     </div>
+    <div class="muted small" style="margin-bottom:12px">Tip: click any row below to see the underlying expense lines, then click a line to open the report.</div>
     <div class="form-row">
       <div class="card"><div class="card-head"><h3>Spend by employee</h3><button class="btn btn-sm btn-outline" onclick="exportAgg('user')">Excel</button></div>
-        <div class="table-wrap"><table><thead><tr><th>Employee</th><th class="num">Spend</th></tr></thead><tbody>${tbl(byUser,'user',userName)}</tbody></table></div></div>
+        <div class="table-wrap"><table><thead><tr><th>Employee</th><th class="num">Spend</th><th></th></tr></thead><tbody>${tbl(byUser,'user',userName)}</tbody></table></div></div>
       <div class="card"><div class="card-head"><h3>Spend by category</h3><button class="btn btn-sm btn-outline" onclick="exportAgg('cat')">Excel</button></div>
-        <div class="table-wrap"><table><thead><tr><th>Category</th><th class="num">Spend</th></tr></thead><tbody>${tbl(byCat)}</tbody></table></div></div>
+        <div class="table-wrap"><table><thead><tr><th>Category</th><th class="num">Spend</th><th></th></tr></thead><tbody>${tbl(byCat,'cat')}</tbody></table></div></div>
     </div>
     <div class="card"><div class="card-head"><h3>Spend by department</h3><button class="btn btn-sm btn-outline" onclick="exportAgg('dept')">Excel</button></div>
-      <div class="table-wrap"><table><thead><tr><th>Department</th><th class="num">Spend</th></tr></thead><tbody>${tbl(byDept)}</tbody></table></div></div>`;
+      <div class="table-wrap"><table><thead><tr><th>Department</th><th class="num">Spend</th><th></th></tr></thead><tbody>${tbl(byDept,'dept')}</tbody></table></div></div>`;
   window._agg = { byUser, byCat, byDept };
+}
+async function drillAgg(kind, encKey){
+  const key = decodeURIComponent(encKey);
+  const reports = await idbGetAll('reports'); const rById={}; reports.forEach(r=>rById[r.id]=r);
+  const lines = await idbGetAll('lines'); const cats = await refAll('categories'); const depts = await refAll('departments'); const sups = await refAll('suppliers');
+  const match = (l)=>{ const r=rById[l.report_id]||{}; const owner=state.usersById[r.user_id];
+    if(kind==='user') return r.user_id===key;
+    if(kind==='cat'){ const ck=l.line_type==='mileage'?'Mileage':(cats.find(x=>x.id===l.category_id)?.name||'Uncategorised'); return ck===key; }
+    if(kind==='dept'){ const dk=depts.find(d=>d.id===owner?.department_id)?.name||'Unassigned'; return dk===key; }
+    return false; };
+  const ls = lines.filter(match).sort((a,b)=>(b.line_date||'').localeCompare(a.line_date||''));
+  let gross=0; const rowsHtml = ls.map(l=>{ const r=rById[l.report_id]||{}; gross+=Number(l.amount)||0;
+    return `<tr class="clickable" onclick="closeModal();openReport('${r.id}')"><td>${fmtDate(l.line_date)}</td><td>${esc(r.title||'')}</td><td>${esc(userName(r.user_id))}</td><td>${l.line_type==='mileage'?'Mileage: '+esc(l.postcode_from)+'→'+esc(l.postcode_to):esc(nameById(sups,l.supplier_id))}</td><td class="num">${fmtMoney(l.amount)}</td><td>›</td></tr>`; }).join('');
+  const title = kind==='user'?userName(key):key;
+  openModal(`<h2>${esc(title)}</h2><div class="modal-sub">${ls.length} line(s) · ${fmtMoney(round2(gross))} total</div>
+    <div class="table-wrap"><table><thead><tr><th>Date</th><th>Report</th><th>Employee</th><th>Detail</th><th class="num">Amount</th><th></th></tr></thead><tbody>${rowsHtml||'<tr><td colspan="6" class="muted">No lines.</td></tr>'}</tbody></table></div>
+    <div class="modal-actions"><button class="btn btn-outline" onclick="closeModal()">Close</button></div>`, true);
 }
 function exportAgg(which){
   const a = window._agg||{};
@@ -1221,41 +1368,70 @@ async function saveRef(store, id){
 }
 async function toggleRef(store, id){ const r=await idbGet(store,id); r.active = r.active!==0?0:1; await idbPut(store,r); navigate(state.page); }
 
-// ── Mileage rates (custom admin) ──
+// ── Approved mileage rates (HMRC AMAP) — what the employee is PAID per mile ──
 async function renderMileageRates(c){
   const rows = (await idbGetAll('mileage_rates')).sort((a,b)=>(a.name||'').localeCompare(b.name||''));
-  const vats = await refAll('vat_rates');
-  setTopbar(`<button class="btn btn-accent" onclick="editMileageRate('')">+ Add rate</button>`);
-  c.innerHTML = `<div class="card"><p class="small muted" style="margin-bottom:10px">Payment rate is what the employee is paid per mile (e.g. HMRC AMAP 45p/25p). The advisory fuel rate (AFR) is used to calculate the reclaimable VAT element.</p>
-    <div class="table-wrap"><table><thead><tr><th>Name</th><th>Vehicle type</th><th class="num">Pay (p/mi)</th><th class="num">AFR (p/mi)</th><th>VAT rate</th><th>Effective</th><th>Status</th><th></th></tr></thead><tbody>
+  setTopbar(`<button class="btn btn-accent" onclick="editMileageRate('')">+ Add approved rate</button>`);
+  c.innerHTML = `<div class="card"><p class="small muted" style="margin-bottom:10px"><strong>Approved (AMAP) rates</strong> are what the employee is reimbursed per mile (e.g. HMRC car 45p for the first 10,000 miles, then 25p). The reclaimable VAT element is set separately under <em>Advisory Fuel Rates</em>.</p>
+    <div class="table-wrap"><table><thead><tr><th>Name</th><th>Vehicle type</th><th class="num">Pay (p/mi)</th><th>Effective</th><th>Status</th><th></th></tr></thead><tbody>
     ${rows.map(r=>`<tr><td><strong>${esc(r.name)}</strong></td><td>${esc(r.vehicle_type||'Any')}</td>
-      <td class="num">${r.rate_pence}</td><td class="num">${r.afr_pence}</td><td>${esc(nameById(vats,r.vat_rate_id))}</td>
-      <td>${fmtDate(r.effective_from)}</td><td>${r.active!==0?'<span class="badge b-green">Active</span>':'<span class="badge b-grey">Inactive</span>'}</td>
+      <td class="num">${r.rate_pence}</td><td>${fmtDate(r.effective_from)}</td>
+      <td>${r.active!==0?'<span class="badge b-green">Active</span>':'<span class="badge b-grey">Inactive</span>'}</td>
       <td><button class="btn btn-sm btn-outline" onclick="editMileageRate('${r.id}')">Edit</button>
       <button class="btn btn-sm btn-outline" onclick="toggleRef('mileage_rates','${r.id}')">${r.active!==0?'Disable':'Enable'}</button></td></tr>`).join('')
-    || '<tr><td colspan="8" class="muted" style="text-align:center;padding:24px">None yet.</td></tr>'}
+    || '<tr><td colspan="6" class="muted" style="text-align:center;padding:24px">None yet.</td></tr>'}
   </tbody></table></div></div>`;
 }
 async function editMileageRate(id){
   const rec = id ? await idbGet('mileage_rates', id) : { active:1 };
-  const vts = await ref('vehicle_types'); const vats = await refAll('vat_rates');
-  openModal(`<h2>${id?'Edit':'Add'} mileage rate</h2>
-    <div class="form-group"><label class="req">Name</label><input id="mr-name" value="${esc(rec.name||'')}" placeholder="e.g. HMRC Car (first 10,000 miles)"></div>
-    <div class="form-row"><div class="form-group"><label>Vehicle type</label><select id="mr-vt"><option value="">Any</option>${vts.map(v=>`<option ${rec.vehicle_type===v.name?'selected':''}>${esc(v.name)}</option>`).join('')}</select></div>
-      <div class="form-group"><label>Effective from</label><input type="date" id="mr-eff" value="${rec.effective_from||today()}"></div></div>
-    <div class="form-row-3">
+  const vts = await ref('vehicle_types');
+  openModal(`<h2>${id?'Edit':'Add'} approved mileage rate</h2>
+    <div class="form-group"><label class="req">Name</label><input id="mr-name" value="${esc(rec.name||'')}" placeholder="e.g. HMRC Car/Van (first 10,000 miles)"></div>
+    <div class="form-row-3"><div class="form-group"><label>Vehicle type</label><select id="mr-vt"><option value="">Any</option>${vts.map(v=>`<option ${rec.vehicle_type===v.name?'selected':''}>${esc(v.name)}</option>`).join('')}</select></div>
       <div class="form-group"><label class="req">Payment rate (p/mile)</label><input type="number" step="0.1" id="mr-rate" value="${rec.rate_pence??''}"></div>
-      <div class="form-group"><label>Advisory fuel rate (p/mile)</label><input type="number" step="0.1" id="mr-afr" value="${rec.afr_pence??0}"></div>
-      <div class="form-group"><label>VAT rate (for reclaim)</label><select id="mr-vat">${optionList(vats.map(v=>({value:v.id,label:v.name})), rec.vat_rate_id, true)}</select></div>
-    </div>
+      <div class="form-group"><label>Effective from</label><input type="date" id="mr-eff" value="${rec.effective_from||today()}"></div></div>
     <div class="modal-actions"><button class="btn btn-outline" onclick="closeModal()">Cancel</button><button class="btn btn-primary" onclick="saveMileageRate('${id}')">Save</button></div>`);
 }
 async function saveMileageRate(id){
   const name=val('mr-name'); const rate=numVal('mr-rate');
   if(!name||!rate){ toast('Name and payment rate are required','error'); return; }
   const rec = id ? await idbGet('mileage_rates', id) : { id:uuid(), active:1 };
-  Object.assign(rec,{ name, vehicle_type:val('mr-vt'), rate_pence:rate, afr_pence:numVal('mr-afr'), vat_rate_id:val('mr-vat'), effective_from:val('mr-eff') });
+  Object.assign(rec,{ name, vehicle_type:val('mr-vt'), rate_pence:rate, effective_from:val('mr-eff') });
   await idbPut('mileage_rates', rec); closeModal(); navigate('adm-mileage');
+}
+
+// ── Advisory fuel rates (HMRC AFR) — used only to derive reclaimable VAT ──
+async function renderAdvisoryRates(c){
+  const rows = (await idbGetAll('advisory_rates')).sort((a,b)=>(a.name||'').localeCompare(b.name||''));
+  const vats = await refAll('vat_rates');
+  setTopbar(`<button class="btn btn-accent" onclick="editAdvisoryRate('')">+ Add advisory rate</button>`);
+  c.innerHTML = `<div class="card"><p class="small muted" style="margin-bottom:10px"><strong>Advisory fuel rates (AFR)</strong> represent the fuel cost per mile and are used only to calculate the <em>reclaimable VAT</em> on a mileage claim (VAT = miles × AFR × VAT fraction). They do not affect the amount paid to the employee.</p>
+    <div class="table-wrap"><table><thead><tr><th>Name</th><th>Fuel type</th><th class="num">AFR (p/mi)</th><th>VAT rate</th><th>Effective</th><th>Status</th><th></th></tr></thead><tbody>
+    ${rows.map(r=>`<tr><td><strong>${esc(r.name)}</strong></td><td>${esc(r.fuel_type||'—')}</td>
+      <td class="num">${r.afr_pence}</td><td>${esc(nameById(vats,r.vat_rate_id))}</td><td>${fmtDate(r.effective_from)}</td>
+      <td>${r.active!==0?'<span class="badge b-green">Active</span>':'<span class="badge b-grey">Inactive</span>'}</td>
+      <td><button class="btn btn-sm btn-outline" onclick="editAdvisoryRate('${r.id}')">Edit</button>
+      <button class="btn btn-sm btn-outline" onclick="toggleRef('advisory_rates','${r.id}')">${r.active!==0?'Disable':'Enable'}</button></td></tr>`).join('')
+    || '<tr><td colspan="7" class="muted" style="text-align:center;padding:24px">None yet.</td></tr>'}
+  </tbody></table></div></div>`;
+}
+async function editAdvisoryRate(id){
+  const rec = id ? await idbGet('advisory_rates', id) : { active:1 };
+  const vats = await refAll('vat_rates');
+  openModal(`<h2>${id?'Edit':'Add'} advisory fuel rate</h2>
+    <div class="form-group"><label class="req">Name</label><input id="ar-name" value="${esc(rec.name||'')}" placeholder="e.g. Petrol 1401–2000cc"></div>
+    <div class="form-row-3"><div class="form-group"><label>Fuel type</label><input id="ar-fuel" value="${esc(rec.fuel_type||'')}" placeholder="Petrol / Diesel / Electric"></div>
+      <div class="form-group"><label class="req">Advisory fuel rate (p/mile)</label><input type="number" step="0.1" id="ar-afr" value="${rec.afr_pence??''}"></div>
+      <div class="form-group"><label>VAT rate (for reclaim)</label><select id="ar-vat">${optionList(vats.map(v=>({value:v.id,label:v.name})), rec.vat_rate_id, true)}</select></div></div>
+    <div class="form-group"><label>Effective from</label><input type="date" id="ar-eff" value="${rec.effective_from||today()}"></div>
+    <div class="modal-actions"><button class="btn btn-outline" onclick="closeModal()">Cancel</button><button class="btn btn-primary" onclick="saveAdvisoryRate('${id}')">Save</button></div>`);
+}
+async function saveAdvisoryRate(id){
+  const name=val('ar-name'); const afr=numVal('ar-afr');
+  if(!name||!afr){ toast('Name and advisory fuel rate are required','error'); return; }
+  const rec = id ? await idbGet('advisory_rates', id) : { id:uuid(), active:1 };
+  Object.assign(rec,{ name, fuel_type:val('ar-fuel'), afr_pence:afr, vat_rate_id:val('ar-vat'), effective_from:val('ar-eff') });
+  await idbPut('advisory_rates', rec); closeModal(); navigate('adm-advisory');
 }
 
 // ── Users (finance admin) ──
@@ -1325,6 +1501,7 @@ async function resetPwd(id){
   try {
     await openDB();
     await seedDefaults();
+    await ensureSplitRates();
     const sid = sessionStorage.getItem('exp_session');
     if (sid){ const u = await idbGet('users', sid); if (u && u.active){ state.user = u; await enterApp(); } }
   } catch(err){ console.error('Init failed', err); toast('Failed to start: '+err.message,'error'); }
