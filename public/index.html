@@ -960,7 +960,7 @@ async function openMileageLineModal(line){
       <div class="form-group"><label>Advisory rate</label><input id="ml-rate-adv" readonly style="background:var(--bg)"></div>
     </div>
     <label class="chk" style="margin-bottom:12px"><input type="checkbox" id="ml-company" ${companyChecked?'checked':''} onchange="recalcMileage()"> Company car / car allowance
-      <span class="muted small" style="font-weight:400">— paid at the advisory rate. Untick for own-car (approved) rates with the 10,000-mile split.</span></label>
+      <span class="muted small" style="font-weight:400">— paid at the advisory fuel rate.</span></label>
     <div class="form-group"><label>Description</label><input id="ml-desc" value="${esc(line?.description||'')}" placeholder="Reason for journey"></div>
     <div class="scan-box" id="ml-breakdown" style="background:#eef4fb;border-color:var(--info)">Select a category and distance to calculate.</div>
     <div class="totbar" style="margin-top:8px;align-items:center">
