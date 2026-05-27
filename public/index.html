@@ -239,8 +239,8 @@
 // database.js so it can move to the Node backend unchanged.
 // ═══════════════════════════════════════════════════════════════
 const DB_NAME = 'KomfortExpenses';
-const DB_VERSION = 2;
-const STORES = ['users','categories','departments','vehicle_types','mileage_rates','advisory_rates','suppliers','vat_rates','reports','lines','payment_runs','settings','audit_log'];
+const DB_VERSION = 3;
+const STORES = ['users','categories','departments','vehicle_types','mileage_rates','advisory_rates','mileage_adjustments','suppliers','vat_rates','reports','lines','payment_runs','settings','audit_log'];
 let db = null;
 
 function openDB(){
@@ -248,7 +248,7 @@ function openDB(){
     const req = indexedDB.open(DB_NAME, DB_VERSION);
     req.onupgradeneeded = e => {
       const d = e.target.result;
-      const simple = ['categories','departments','vehicle_types','mileage_rates','advisory_rates','suppliers','vat_rates','payment_runs'];
+      const simple = ['categories','departments','vehicle_types','mileage_rates','advisory_rates','mileage_adjustments','suppliers','vat_rates','payment_runs'];
       simple.forEach(s => { if(!d.objectStoreNames.contains(s)) d.createObjectStore(s,{keyPath:'id'}); });
       if(!d.objectStoreNames.contains('users')){ const s=d.createObjectStore('users',{keyPath:'id'}); s.createIndex('username','username',{unique:true}); }
       if(!d.objectStoreNames.contains('reports')){ const s=d.createObjectStore('reports',{keyPath:'id'}); s.createIndex('user_id','user_id'); s.createIndex('status','status'); }
@@ -312,13 +312,9 @@ async function seedDefaults(){
     ['Installation','INS'],['Design','DSN'],['Management','MGT']],'departments',['name','dept_code']);
   for (const d of depts) await idbPut('departments', d);
 
-  const vts = mk([['Car - Petrol'],['Car - Diesel'],['Car - Electric'],['Van'],['Motorcycle']],'vehicle_types',['name']);
-  for (const v of vts) await idbPut('vehicle_types', v);
-
-  // Approved mileage rates (HMRC AMAP) — what the employee is PAID per mile
-  await seedApprovedRates();
-  // Advisory fuel rates (HMRC AFR) — used only to calculate the reclaimable VAT element
-  await seedAdvisoryRates(vatStd);
+  // Mileage rate categories + HMRC rates (effective 1 Mar 2026)
+  await seedMileageCategoriesAndRates(vatStd);
+  await setSetting('mileage_model','v3');
 
   const sups = ['Shell','BP','Esso','Premier Inn','Travelodge','Greggs','Costa Coffee','Screwfix','Toolstation','National Rail'];
   for (const s of sups) await idbPut('suppliers',{ id:uuid(), name:s, active:1, created_by:'system', created_at:nowISO() });
@@ -348,48 +344,50 @@ async function seedDefaults(){
   await idbPut('lines',{ id:uuid(), report_id:rptId, line_type:'expense', line_date:today(), description:'Lunch on site visit',
     supplier_id:shell, category_id:travelCat, amount:8.40, vat_rate_id:vats[2].id, vat_amount:0,
     postcode_from:'', postcode_to:'', distance_miles:0, vehicle_type:'', vehicle_reg:'', mileage_rate_id:'', receipts:[], created_at:nowISO() });
-  const carRate = (await idbGetAll('mileage_rates')).find(r=>r.name.includes('first 10,000')&&r.vehicle_type==='Car');
-  const petrolAfr = (await idbGetAll('advisory_rates')).find(a=>/petrol/i.test(a.fuel_type||a.name));
+  const sampleCat = 'Car - Petrol - up to 1400cc';
+  const sampleRate = await findApplicableRate(sampleCat, today());
+  const adv = Number(sampleRate?.afr_pence||12);
   await idbPut('lines',{ id:uuid(), report_id:rptId, line_type:'mileage', line_date:today(), description:'Leeds office to Crawley site',
-    supplier_id:'', category_id:'', amount:+(48*0.45).toFixed(2), vat_rate_id:'', vat_amount:+(48*(petrolAfr?.afr_pence||12)/100*(20/120)).toFixed(2),
-    postcode_from:'LS10 1AB', postcode_to:'RH10 8GH', distance_miles:48, vehicle_type:'Car - Petrol', vehicle_reg:'YK19 ABC',
-    mileage_rate_id:carRate?.id||'', advisory_rate_id:petrolAfr?.id||'', receipts:[], created_at:nowISO() });
+    supplier_id:'', category_id:'', amount:+(48*0.45).toFixed(2), vat_rate_id:'', vat_amount:+(48*adv/100*(20/120)).toFixed(2),
+    postcode_from:'LS10 1AB', postcode_to:'RH10 8GH', distance_miles:48, vehicle_type:sampleCat, vehicle_reg:'YK19 ABC',
+    mileage_rate_id:sampleRate?.id||'', company_car:false, rate_up:45, rate_over:25, rate_adv:adv, miles_under:48, miles_over:0,
+    receipts:[], created_at:nowISO() });
 
   await logAction('seed',{ detail:'Initial demo data created' });
 }
 
-// Approved mileage rates (HMRC AMAP) — paid to the employee, keyed by vehicle type
-async function seedApprovedRates(){
-  const rates = [
-    ['HMRC Car/Van (first 10,000 miles)','Car',45],
-    ['HMRC Car/Van (over 10,000 miles)','Car',25],
-    ['HMRC Van','Van',45],
-    ['HMRC Motorcycle','Motorcycle',24],
-    ['HMRC Bicycle','Bicycle',20],
-  ];
-  for (const [name,vt,rate] of rates) await idbPut('mileage_rates',{ id:uuid(), name, vehicle_type:vt, rate_pence:rate, effective_from:'2024-09-01', active:1 });
-}
-// Advisory fuel rates (HMRC AFR) — only used to derive the reclaimable VAT element
-async function seedAdvisoryRates(vatStdId){
+// HMRC mileage rate categories + rates (effective 1 Mar 2026). Each category has:
+// approved up to 10k (rate_pence), approved over 10k (rate_over_pence), advisory (afr_pence).
+const MILEAGE_RATE_TABLE = [
+  ['Car - Petrol - up to 1400cc',      45,25,12],
+  ['Car - Petrol - 1401 to 2000cc',    45,25,14],
+  ['Car - Petrol - over 2000cc',       45,25,22],
+  ['Car - Diesel - up to 1600cc',      45,25,12],
+  ['Car - Diesel - 1601 to 2000cc',    45,25,13],
+  ['Car - Diesel - over 2000cc',       45,25,18],
+  ['Car - Electric - Home Charger',    45,25,7],
+  ['Car - Electric - Public Charger',  45,25,15],
+];
+async function seedMileageCategoriesAndRates(vatStdId){
   if (!vatStdId){ const v=(await idbGetAll('vat_rates')).find(x=>/standard/i.test(x.name)); vatStdId=v?.id; }
-  const ars = [
-    ['Petrol up to 1400cc','Petrol',12],
-    ['Petrol 1401–2000cc','Petrol',14],
-    ['Petrol over 2000cc','Petrol',22],
-    ['Diesel up to 1600cc','Diesel',11],
-    ['Diesel 1601–2000cc','Diesel',13],
-    ['Diesel over 2000cc','Diesel',17],
-    ['Electric (AER)','Electric',7],
-  ];
-  for (const [name,fuel,afr] of ars) await idbPut('advisory_rates',{ id:uuid(), name, fuel_type:fuel, afr_pence:afr, vat_rate_id:vatStdId, effective_from:'2024-09-01', active:1 });
+  for (const [cat] of MILEAGE_RATE_TABLE) await idbPut('vehicle_types',{ id:uuid(), name:cat, active:1 });
+  for (const [cat,up,over,adv] of MILEAGE_RATE_TABLE)
+    await idbPut('mileage_rates',{ id:uuid(), vehicle_type:cat, rate_pence:up, rate_over_pence:over, afr_pence:adv, vat_rate_id:vatStdId, effective_from:'2026-03-01', active:1 });
 }
-// Migration / top-up for existing local databases (split out advisory from old combined rates)
-async function ensureSplitRates(){
-  const adv = await idbGetAll('advisory_rates');
-  if (adv.length === 0) await seedAdvisoryRates();
-  // Strip the legacy afr_pence/vat_rate_id off any old combined approved rates so the table is clean
-  const mrs = await idbGetAll('mileage_rates');
-  for (const r of mrs){ if ('afr_pence' in r || 'vat_rate_id' in r){ delete r.afr_pence; delete r.vat_rate_id; await idbPut('mileage_rates', r); } }
+// Migration to the HMRC category model — rebuild categories + rates once
+async function ensureMileageModelV3(){
+  if (await getSetting('mileage_model') === 'v3') return;
+  for (const r of await idbGetAll('mileage_rates')) await idbDelete('mileage_rates', r.id);
+  for (const v of await idbGetAll('vehicle_types')) await idbDelete('vehicle_types', v.id);
+  for (const a of await idbGetAll('advisory_rates')) await idbDelete('advisory_rates', a.id);
+  await seedMileageCategoriesAndRates();
+  await setSetting('mileage_model','v3');
+}
+// Pick the rate for a category that is in force on the claim date (latest effective_from <= date)
+async function findApplicableRate(category, claimDate){
+  const rates = (await idbGetAll('mileage_rates')).filter(r => r.active!==0 && r.vehicle_type===category && (!r.effective_from || r.effective_from <= claimDate));
+  rates.sort((a,b)=>(b.effective_from||'').localeCompare(a.effective_from||''));
+  return rates[0] || null;
 }
 
 // ═══════════════════════════════════════════════
@@ -470,6 +468,7 @@ function navItems(){
   if (isFinance()) items.push({ id:'dashboard', label:'Dashboard', ic:'▦' });
   items.push({ id:'my-expenses', label:'My Expenses', ic:'£', sec:'Mine' });
   if (isCC()) items.push({ id:'my-cc', label:'Credit Card', ic:'▭' });
+  items.push({ id:'my-mileage', label:'My Mileage', ic:'⛽' });
   if (isManager()) items.push({ id:'approvals', label:'Approvals', ic:'✔', badge:'mgr', sec:'Approve' });
   if (isFinance()){
     items.push({ id:'finance-approvals', label:'Finance Approvals', ic:'✔', badge:'fin', sec:'Finance' });
@@ -479,9 +478,8 @@ function navItems(){
     items.push({ id:'adm-users', label:'Users', ic:'⚷', sec:'Administration' });
     items.push({ id:'adm-categories', label:'Categories', ic:'▤' });
     items.push({ id:'adm-departments', label:'Departments', ic:'▥' });
-    items.push({ id:'adm-vehicles', label:'Vehicle Types', ic:'⛐' });
+    items.push({ id:'adm-vehicles', label:'Mileage Rate Categories', ic:'⛐' });
     items.push({ id:'adm-mileage', label:'Mileage Rates', ic:'⛽' });
-    items.push({ id:'adm-advisory', label:'Advisory Fuel Rates', ic:'⛽' });
     items.push({ id:'adm-vat', label:'VAT Rates', ic:'%' });
     items.push({ id:'adm-suppliers', label:'Suppliers', ic:'☷' });
   }
@@ -510,10 +508,10 @@ async function computeBadges(){
   return { mgr, fin };
 }
 const PAGE_TITLES = {
-  dashboard:'Dashboard', 'my-expenses':'My Expense Reports', 'my-cc':'Company Credit Card', approvals:'Approvals',
+  dashboard:'Dashboard', 'my-expenses':'My Expense Reports', 'my-cc':'Company Credit Card', 'my-mileage':'Mileage Tracker', approvals:'Approvals',
   'finance-approvals':'Finance Approvals', 'all-claims':'All Claims', 'payment-runs':'Payment Runs', analytics:'Reports',
-  'adm-users':'Users', 'adm-categories':'Categories', 'adm-departments':'Departments', 'adm-vehicles':'Vehicle Types',
-  'adm-mileage':'Mileage Rates', 'adm-advisory':'Advisory Fuel Rates', 'adm-vat':'VAT Rates', 'adm-suppliers':'Suppliers'
+  'adm-users':'Users', 'adm-categories':'Categories', 'adm-departments':'Departments', 'adm-vehicles':'Mileage Rate Categories',
+  'adm-mileage':'Mileage Rates', 'adm-vat':'VAT Rates', 'adm-suppliers':'Suppliers'
 };
 async function navigate(page){
   state.page = page; state.currentReportId = null;
@@ -529,6 +527,7 @@ async function navigate(page){
       case 'dashboard': await renderDashboard(c); break;
       case 'my-expenses': await renderReportList(c,'expense'); break;
       case 'my-cc': await renderReportList(c,'creditcard'); break;
+      case 'my-mileage': await renderMileageTracker(c); break;
       case 'approvals': await renderApprovals(c); break;
       case 'finance-approvals': await renderFinanceApprovals(c); break;
       case 'all-claims': await renderAllClaims(c); break;
@@ -539,7 +538,6 @@ async function navigate(page){
       case 'adm-departments': await renderRef(c,'departments'); break;
       case 'adm-vehicles': await renderRef(c,'vehicle_types'); break;
       case 'adm-mileage': await renderMileageRates(c); break;
-      case 'adm-advisory': await renderAdvisoryRates(c); break;
       case 'adm-vat': await renderRef(c,'vat_rates'); break;
       case 'adm-suppliers': await renderRef(c,'suppliers'); break;
       default: c.innerHTML = '<div class="empty">Page not found</div>';
@@ -597,6 +595,32 @@ function lineTotals(lines){
   let gross=0, vat=0, miles=0;
   lines.forEach(l=>{ gross+=Number(l.amount)||0; vat+=Number(l.vat_amount)||0; if(l.line_type==='mileage') miles+=Number(l.distance_miles)||0; });
   return { gross:round2(gross), vat:round2(vat), net:round2(gross-vat), miles:round2(miles), count:lines.length };
+}
+
+// ── Tax year (UK: 6 April – 5 April) + mileage tracking ──
+const AMAP_THRESHOLD = 10000;
+function taxYearOf(dateStr){ const d=new Date(dateStr||today()); const y=d.getFullYear(); const start=new Date(y,3,6); const sy = d>=start ? y : y-1; return `${sy}/${String(sy+1).slice(2)}`; }
+function taxYearBounds(ty){ const sy=Number(String(ty).split('/')[0]); return { start:`${sy}-04-06`, end:`${sy+1}-04-05`, label:ty, sy }; }
+function recentTaxYears(n=4){ const cur=taxYearOf(today()); const sy=Number(cur.split('/')[0]); const out=[]; for(let i=0;i<n;i++){ const y=sy-i; out.push(`${y}/${String(y+1).slice(2)}`); } return out; }
+async function allMileageLinesFor(userId){
+  const reports = await idbByIndex('reports','user_id',userId);
+  const out=[];
+  for (const r of reports){ for (const l of await reportLines(r.id)){ if(l.line_type==='mileage'){ l._report=r; out.push(l); } } }
+  return out;
+}
+// Cumulative APPROVED (own-car) miles in the tax year before a given claim date — used for the 10k split.
+// Counts own-car mileage lines dated earlier than the claim, plus all finance adjustments for that tax year.
+async function approvedMilesBefore(userId, claimDate, excludeLineId){
+  const ty = taxYearOf(claimDate); const b = taxYearBounds(ty);
+  let miles=0;
+  for (const l of await allMileageLinesFor(userId)){
+    if (l.id===excludeLineId || l.company_car) continue;
+    if (!l.line_date || l.line_date<b.start || l.line_date>b.end) continue;
+    if (l.line_date < claimDate) miles += Number(l.distance_miles)||0;
+  }
+  const adj = (await idbGetAll('mileage_adjustments')).filter(a=>a.user_id===userId && a.tax_year===ty);
+  adj.forEach(a=> miles += Number(a.miles)||0);
+  return round2(miles);
 }
 
 // ── Receipts (file/camera capture) ──
@@ -751,9 +775,9 @@ async function openReport(id){
 
   const lineRows = lines.map(l=>{
     if (l.line_type==='mileage'){
-      return `<tr><td>${fmtDate(l.line_date)}</td><td><span class="badge b-blue">Mileage</span></td>
+      return `<tr><td>${fmtDate(l.line_date)}</td><td><span class="badge b-blue">Mileage</span>${l.company_car?'<div class="small muted" style="margin-top:2px">Company car</div>':''}</td>
         <td>${esc(l.postcode_from)} → ${esc(l.postcode_to)}<div class="small muted">${esc(l.description)||''} ${l.vehicle_reg?'· '+esc(l.vehicle_reg):''}</div></td>
-        <td>${esc(l.vehicle_type)}<div class="small muted">${l.distance_miles} mi</div></td>
+        <td>${esc(l.vehicle_type)}<div class="small muted">${esc(mileageRateDesc(l))}</div></td>
         <td class="num">${fmtMoney(l.vat_amount)}</td><td class="num"><strong>${fmtMoney(l.amount)}</strong></td>
         <td>${receiptCountBadge(l)}</td>
         <td>${editable?`<button class="btn btn-sm btn-outline" onclick="editLine('${l.id}')">Edit</button> <button class="btn btn-sm btn-danger" onclick="deleteLine('${l.id}')">×</button>`:''}</td></tr>`;
@@ -791,6 +815,14 @@ async function openReport(id){
     </div></div>`);
 }
 function c_html(html){ document.getElementById('content').innerHTML = html; }
+// One-line description of how a mileage line was rated
+function mileageRateDesc(l){
+  const mi = round2(l.distance_miles||0);
+  if (l.company_car) return `${mi} mi · advisory ${l.rate_adv??''}p`;
+  if (Number(l.miles_over)>0 && Number(l.miles_under)>0) return `${round2(l.miles_under)} mi @ ${l.rate_up}p + ${round2(l.miles_over)} mi @ ${l.rate_over}p`;
+  if (Number(l.miles_over)>0) return `${mi} mi @ ${l.rate_over}p (over 10k)`;
+  return `${mi} mi @ ${l.rate_up??''}p`;
+}
 function receiptCountBadge(l){ const n=(l.receipts||[]).length; return n?`<span class="badge b-grey" title="${n} receipt(s)" style="cursor:pointer" onclick="showLineReceipts('${l.id}')">📎 ${n}</span>`:'<span class="small muted">—</span>'; }
 async function showLineReceipts(lineId){
   const l = await idbGet('lines', lineId); const rs=l.receipts||[];
@@ -904,30 +936,35 @@ async function saveExpenseLine(id){
 
 // ── Mileage line ──
 async function addMileageLine(){ openMileageLineModal(null); }
+let _mlOwnerId = null, _mlEditId = '';
 async function openMileageLineModal(line){
   _lineReceipts = line ? [...(line.receipts||[])] : [];
-  const vts = await ref('vehicle_types'); const mrs = (await refAll('mileage_rates')).filter(r=>r.active!==0);
-  const ars = (await refAll('advisory_rates')).filter(r=>r.active!==0);
-  const vtOpts = optionList(vts.map(v=>({value:v.name,label:v.name})), line?.vehicle_type, true);
-  const rateOpts = optionList(mrs.map(r=>({value:r.id,label:`${r.name}${r.vehicle_type?' — '+r.vehicle_type:''} (${r.rate_pence}p/mi)`})), line?.mileage_rate_id, true);
-  const advOpts = optionList(ars.map(r=>({value:r.id,label:`${r.name} (${r.afr_pence}p/mi)`})), line?.advisory_rate_id, true);
+  _mlEditId = line?.id || '';
+  const rpt = await idbGet('reports', state.currentReportId); _mlOwnerId = rpt?.user_id || state.user.id;
+  const cats = await ref('vehicle_types');
+  const catOpts = optionList(cats.map(v=>({value:v.name,label:v.name})), line?.vehicle_type, true);
+  const companyChecked = line ? !!line.company_car : true;   // default ticked for new claims
   openModal(`<h2>${line?'Edit':'Add'} mileage</h2>
-    <div class="form-row"><div class="form-group"><label class="req">Date</label><input type="date" id="ml-date" value="${line?.line_date||today()}"></div>
-      <div class="form-group"><label>Vehicle reg</label><input id="ml-reg" value="${esc(line?.vehicle_reg||'')}" placeholder="e.g. YK19 ABC"></div></div>
+    <div class="form-row"><div class="form-group"><label class="req">Date</label><input type="date" id="ml-date" value="${line?.line_date||today()}" onchange="recalcMileage()"></div>
+      <div class="form-group"><label class="req">Vehicle reg</label><input id="ml-reg" value="${esc(line?.vehicle_reg||'')}" placeholder="e.g. YK19 ABC"></div></div>
     <div class="form-row-3">
-      <div class="form-group"><label>Postcode from</label><input id="ml-from" value="${esc(line?.postcode_from||'')}" placeholder="LS10 1AB"></div>
-      <div class="form-group"><label>Postcode to</label><input id="ml-to" value="${esc(line?.postcode_to||'')}" placeholder="RH10 8GH"></div>
+      <div class="form-group"><label class="req">Postcode from</label><input id="ml-from" value="${esc(line?.postcode_from||'')}" placeholder="LS10 1AB"></div>
+      <div class="form-group"><label class="req">Postcode to</label><input id="ml-to" value="${esc(line?.postcode_to||'')}" placeholder="RH10 8GH"></div>
       <div class="form-group"><label class="req">Distance (miles)</label><input type="number" step="0.1" id="ml-dist" value="${line?.distance_miles||''}" oninput="recalcMileage()">
         <button type="button" class="btn btn-sm btn-outline" style="margin-top:6px" onclick="estimateDistance()">↻ Estimate from postcodes</button></div>
     </div>
+    <div class="form-group"><label class="req">Mileage rate category</label><select id="ml-cat" onchange="recalcMileage()">${catOpts}</select></div>
     <div class="form-row-3">
-      <div class="form-group"><label>Vehicle type</label><select id="ml-vehicle" onchange="onVehicleChange()">${vtOpts}</select></div>
-      <div class="form-group"><label class="req">Approved mileage rate</label><select id="ml-rate" onchange="recalcMileage()">${rateOpts}</select><div class="small muted">Sets the amount paid.</div></div>
-      <div class="form-group"><label>Advisory fuel rate</label><select id="ml-advisory" onchange="recalcMileage()">${advOpts}</select><div class="small muted">Sets the reclaimable VAT.</div></div>
+      <div class="form-group"><label>Approved ≤10,000 mi</label><input id="ml-rate-up" readonly style="background:var(--bg)"></div>
+      <div class="form-group"><label>Approved >10,000 mi</label><input id="ml-rate-over" readonly style="background:var(--bg)"></div>
+      <div class="form-group"><label>Advisory rate</label><input id="ml-rate-adv" readonly style="background:var(--bg)"></div>
     </div>
+    <label class="chk" style="margin-bottom:12px"><input type="checkbox" id="ml-company" ${companyChecked?'checked':''} onchange="recalcMileage()"> Company car / car allowance
+      <span class="muted small" style="font-weight:400">— paid at the advisory rate. Untick for own-car (approved) rates with the 10,000-mile split.</span></label>
     <div class="form-group"><label>Description</label><input id="ml-desc" value="${esc(line?.description||'')}" placeholder="Reason for journey"></div>
-    <div class="totbar" style="margin-top:4px;align-items:center">
-      <div class="t"><div class="v" id="ml-amount-d">£0.00</div><div class="l">Amount payable</div></div>
+    <div class="scan-box" id="ml-breakdown" style="background:#eef4fb;border-color:var(--info)">Select a category and distance to calculate.</div>
+    <div class="totbar" style="margin-top:8px;align-items:center">
+      <div class="t"><div class="v" id="ml-amount-d">£0.00</div><div class="l" id="ml-amount-l">Amount payable</div></div>
       <div class="t"><label class="small" style="color:rgba(255,255,255,.7);display:block;margin-bottom:2px">VAT (£) — editable</label>
         <div style="display:flex;gap:6px"><input type="number" step="0.01" id="ml-vat" value="${line?.vat_amount??''}" oninput="_mvatManual=true" style="width:120px">
         <button type="button" class="btn btn-sm btn-outline" style="border-color:rgba(255,255,255,.5);color:#fff" onclick="_mvatManual=false;recalcMileage()">↻ Auto</button></div></div>
@@ -939,36 +976,42 @@ async function openMileageLineModal(line){
   _mvatManual = false;
   recalcMileage();
 }
-async function onVehicleChange(){
-  // auto-pick a matching approved rate (by vehicle type) and advisory rate (by fuel) if they don't already match
-  const vt = val('ml-vehicle');
-  const mrs = (await refAll('mileage_rates')).filter(r=>r.active!==0);
-  const ars = (await refAll('advisory_rates')).filter(r=>r.active!==0);
-  const sel = document.getElementById('ml-rate');
-  const cur = mrs.find(r=>r.id===sel.value);
-  if (!cur || (cur.vehicle_type && !vt.startsWith(cur.vehicle_type))){
-    const match = mrs.find(r=>r.vehicle_type && vt.startsWith(r.vehicle_type));
-    if (match) sel.value = match.id;
-  }
-  const aSel = document.getElementById('ml-advisory');
-  if (aSel && !aSel.value){
-    const fuel = (vt.split('-')[1]||'').trim();   // 'Car - Petrol' -> 'Petrol'
-    const am = ars.find(a=>fuel && new RegExp(fuel,'i').test(a.fuel_type||a.name));
-    if (am) aSel.value = am.id;
-  }
-  recalcMileage();
-}
+let _mlCalc = null;   // last computed { amount, vat, rate, under, over }
 async function recalcMileage(){
-  const dist = numVal('ml-dist'); const rid = val('ml-rate'); const aid = val('ml-advisory');
-  const mrs = await refAll('mileage_rates'); const ars = await refAll('advisory_rates'); const vats = await refAll('vat_rates');
-  const r = mrs.find(x=>x.id===rid); const a = ars.find(x=>x.id===aid);
-  let amount=0, vat=0;
-  if (r) amount = round2(dist * Number(r.rate_pence)/100);
-  if (a){ const v = vats.find(x=>x.id===a.vat_rate_id); const pct = v?Number(v.percent):20; if (Number(a.afr_pence)>0) vat = round2(dist * Number(a.afr_pence)/100 * (pct/(100+pct))); }
+  const dist = numVal('ml-dist'); const cat = val('ml-cat'); const date = val('ml-date'); const company = !!document.getElementById('ml-company')?.checked;
+  const rate = (cat && date) ? await findApplicableRate(cat, date) : null;
+  const vats = await refAll('vat_rates');
+  // populate the read-only rate boxes
+  const setRO=(id,v)=>{ const e=document.getElementById(id); if(e) e.value=v; };
+  setRO('ml-rate-up', rate?`${rate.rate_pence}p/mi`:'—');
+  setRO('ml-rate-over', rate?`${rate.rate_over_pence}p/mi`:'—');
+  setRO('ml-rate-adv', rate?`${rate.afr_pence}p/mi`:'—');
+  const bd = document.getElementById('ml-breakdown');
+  let amount=0, vat=0, under=0, over=0, note='';
+  if (!rate){ note = cat?`No mileage rate is effective on ${fmtDate(date)} for “${esc(cat)}”. Add one under Mileage Rates.`:'Select a mileage rate category.'; }
+  else {
+    const v = vats.find(x=>x.id===rate.vat_rate_id); const pct = v?Number(v.percent):20;
+    const adv = Number(rate.afr_pence)||0;
+    if (company){
+      amount = round2(dist * adv/100);
+      note = `Company car / allowance — ${dist||0} mi × ${adv}p (advisory) = ${fmtMoney(amount)}`;
+    } else {
+      const cum = await approvedMilesBefore(_mlOwnerId, date, _mlEditId);
+      under = Math.max(0, Math.min(dist, AMAP_THRESHOLD - cum));
+      over = round2(dist - under);
+      amount = round2(under*Number(rate.rate_pence)/100 + over*Number(rate.rate_over_pence)/100);
+      if (over>0 && under>0) note = `Own car — crosses the 10,000-mile threshold: ${round2(under)} mi @ ${rate.rate_pence}p + ${over} mi @ ${rate.rate_over_pence}p = ${fmtMoney(amount)}. <span class="muted">(${round2(cum)} mi already this tax year → ${round2(cum+dist)} mi)</span>`;
+      else if (over>0) note = `Own car — over 10,000 miles: ${over} mi @ ${rate.rate_over_pence}p = ${fmtMoney(amount)}. <span class="muted">(${round2(cum)} mi already this tax year)</span>`;
+      else note = `Own car — ${round2(under)} mi @ ${rate.rate_pence}p = ${fmtMoney(amount)}. <span class="muted">(${round2(cum)} mi already this tax year → ${round2(cum+dist)} mi)</span>`;
+    }
+    if (adv>0) vat = round2(dist * adv/100 * (pct/(100+pct)));
+  }
+  if (bd) bd.innerHTML = note;
   const ad = document.getElementById('ml-amount-d'); if (ad) ad.textContent = fmtMoney(amount);
+  const al = document.getElementById('ml-amount-l'); if (al) al.textContent = company ? 'Amount payable (advisory rate)' : 'Amount payable (approved rate)';
   if (!_mvatManual){ const vf = document.getElementById('ml-vat'); if (vf) vf.value = vat.toFixed(2); }
-  const finalVat = _mvatManual ? round2(numVal('ml-vat')) : vat;
-  return { amount, vat: finalVat, rate:r };
+  _mlCalc = { amount, vat: _mvatManual?round2(numVal('ml-vat')):vat, rate, under:round2(under), over:round2(over) };
+  return _mlCalc;
 }
 async function estimateDistance(){
   const a = val('ml-from'), b = val('ml-to');
@@ -986,16 +1029,22 @@ async function estimateDistance(){
 }
 function haversine(lat1,lon1,lat2,lon2){ const R=3958.8, toR=x=>x*Math.PI/180; const dLat=toR(lat2-lat1),dLon=toR(lon2-lon1); const x=Math.sin(dLat/2)**2+Math.cos(toR(lat1))*Math.cos(toR(lat2))*Math.sin(dLon/2)**2; return R*2*Math.atan2(Math.sqrt(x),Math.sqrt(1-x)); }
 async function saveMileageLine(id){
-  const dist = numVal('ml-dist'); const rid = val('ml-rate');
-  if(!val('ml-date')||!dist||!rid){ toast('Date, distance and mileage rate are required','error'); return; }
-  const { amount } = await recalcMileage();
+  const dist = numVal('ml-dist'); const cat = val('ml-cat');
+  if(!val('ml-date')||!dist||!cat){ toast('Date, distance and mileage rate category are required','error'); return; }
+  if(!val('ml-reg')){ toast('Vehicle registration is required','error'); return; }
+  if(!val('ml-from')||!val('ml-to')){ toast('Postcode from and to are required','error'); return; }
+  const calc = await recalcMileage();
+  if(!calc.rate){ toast('No mileage rate is effective for this date/category','error'); return; }
   const vat = round2(numVal('ml-vat'));
   const line = {
     id: id||uuid(), report_id: state.currentReportId, line_type:'mileage',
     line_date: val('ml-date'), description: val('ml-desc'),
-    supplier_id:'', category_id:'', amount: round2(amount), vat_rate_id:'', vat_amount: vat,
+    supplier_id:'', category_id:'', amount: round2(calc.amount), vat_rate_id:'', vat_amount: vat,
     postcode_from: val('ml-from'), postcode_to: val('ml-to'), distance_miles: dist,
-    vehicle_type: val('ml-vehicle'), vehicle_reg: val('ml-reg'), mileage_rate_id: rid, advisory_rate_id: val('ml-advisory'),
+    vehicle_type: val('ml-cat'), vehicle_reg: val('ml-reg'), mileage_rate_id: calc.rate.id,
+    company_car: !!document.getElementById('ml-company')?.checked,
+    rate_up: Number(calc.rate.rate_pence), rate_over: Number(calc.rate.rate_over_pence), rate_adv: Number(calc.rate.afr_pence),
+    miles_under: calc.under, miles_over: calc.over,
     receipts: _lineReceipts, created_at: nowISO()
   };
   await idbPut('lines', line); closeModal(); openReport(state.currentReportId);
@@ -1050,11 +1099,100 @@ async function exportReport(id){
       l.line_type==='mileage'?`${l.postcode_from} > ${l.postcode_to}`:nameById(sups,l.supplier_id),
       l.line_type==='mileage'?'Mileage':(cat?.name||''), l.line_type==='mileage'?'':(cat?.nominal_code||''),
       nameById(vats,l.vat_rate_id), round2((l.amount||0)-(l.vat_amount||0)).toFixed(2), (l.vat_amount||0).toFixed(2), (l.amount||0).toFixed(2),
-      l.description, l.vehicle_type||'', l.vehicle_reg||'', l.distance_miles||'', (l.receipts||[]).length ];
+      l.description, (l.vehicle_type||'')+(l.company_car?' (Company car)':''), l.vehicle_reg||'', l.distance_miles||'', (l.receipts||[]).length ];
   });
   const t = lineTotals(lines);
   rows.push(['','','','','','TOTAL', t.net.toFixed(2), t.vat.toFixed(2), t.gross.toFixed(2),'','','','','']);
   downloadExcel(`${r.title.replace(/[^\w]+/g,'_')}.xls`, 'Report', headers, rows, r.title+' — '+userName(r.user_id));
+}
+
+// ═══════════════════════════════════════════════
+// MILEAGE TRACKER (per employee, per tax year)
+// ═══════════════════════════════════════════════
+async function mileageSummary(userId, ty){
+  const b = taxYearBounds(ty);
+  const lines = (await allMileageLinesFor(userId)).filter(l=>l.line_date>=b.start && l.line_date<=b.end);
+  let own=0, company=0, amount=0, vat=0;
+  lines.forEach(l=>{ const mi=Number(l.distance_miles)||0; if(l.company_car) company+=mi; else own+=mi; amount+=Number(l.amount)||0; vat+=Number(l.vat_amount)||0; });
+  const adj = (await idbGetAll('mileage_adjustments')).filter(a=>a.user_id===userId && a.tax_year===ty);
+  const adjMiles = adj.reduce((s,a)=>s+(Number(a.miles)||0),0);
+  const approvedTotal = own + adjMiles;
+  return { lines, adj, own:round2(own), company:round2(company), adjMiles:round2(adjMiles), total:round2(own+company),
+    approvedTotal:round2(approvedTotal), remaining:round2(Math.max(0,AMAP_THRESHOLD-approvedTotal)), amount:round2(amount), vat:round2(vat) };
+}
+async function renderMileageTracker(c){
+  const fin = isFinance();
+  const ty = window._mtTY && recentTaxYears(6).includes(window._mtTY) ? window._mtTY : taxYearOf(today());
+  const tyOpts = recentTaxYears(6).map(t=>`<option ${t===ty?'selected':''}>${t}</option>`).join('');
+  let viewUser = fin ? (window._mtUser || state.user.id) : state.user.id;
+  const users = fin ? (await idbGetAll('users')).sort((a,b)=>a.full_name.localeCompare(b.full_name)) : [];
+  const showAll = fin && viewUser==='ALL';
+  let toolbar = `<div class="toolbar"><label class="small muted">Tax year</label><select onchange="window._mtTY=this.value;navigate('my-mileage')">${tyOpts}</select>`;
+  if (fin) toolbar += `<label class="small muted">Employee</label><select onchange="window._mtUser=this.value;navigate('my-mileage')"><option value="ALL" ${showAll?'selected':''}>All employees</option>${users.map(u=>`<option value="${u.id}" ${viewUser===u.id?'selected':''}>${esc(u.full_name)}</option>`).join('')}</select>`;
+  toolbar += `</div>`;
+
+  if (showAll){
+    const rows=[];
+    for (const u of users){ const s=await mileageSummary(u.id, ty); if(s.total>0||s.adjMiles>0) rows.push({u,s}); }
+    setTopbar(`<button class="btn btn-accent" onclick="addMileageAdjustment('','${ty}')">+ Mileage adjustment</button> <button class="btn btn-info" onclick="exportMileageTracker('${ty}')">Export (Excel)</button>`);
+    c.innerHTML = toolbar + `<div class="card"><div class="card-head"><h3>Mileage by employee — ${ty} tax year</h3></div>
+      <div class="table-wrap"><table><thead><tr><th>Employee</th><th class="num">Own-car mi</th><th class="num">Company mi</th><th class="num">Adjust. mi</th><th class="num">Total mi</th><th class="num">Approved total</th><th class="num">To 10k</th><th class="num">Paid</th><th></th></tr></thead><tbody>
+        ${rows.map(({u,s})=>`<tr class="clickable" onclick="window._mtUser='${u.id}';navigate('my-mileage')"><td><strong>${esc(u.full_name)}</strong></td>
+          <td class="num">${s.own}</td><td class="num">${s.company}</td><td class="num">${s.adjMiles}</td><td class="num">${s.total}</td>
+          <td class="num">${s.approvedTotal}${s.approvedTotal>AMAP_THRESHOLD?' <span class="badge b-amber">over 10k</span>':''}</td><td class="num">${s.remaining}</td><td class="num">${fmtMoney(s.amount)}</td><td>›</td></tr>`).join('')
+        || '<tr><td colspan="9" class="muted" style="text-align:center;padding:24px">No mileage recorded this tax year.</td></tr>'}
+      </tbody></table></div></div>`;
+    return;
+  }
+
+  const s = await mileageSummary(viewUser, ty);
+  setTopbar(`${fin?`<button class="btn btn-accent" onclick="addMileageAdjustment('${viewUser}','${ty}')">+ Mileage adjustment</button> `:''}<button class="btn btn-info" onclick="exportMileageTracker('${ty}','${viewUser}')">Export</button>`);
+  const linesSorted = s.lines.sort((a,b)=>(a.line_date||'').localeCompare(b.line_date||''));
+  c.innerHTML = toolbar + `
+    ${fin&&viewUser!==state.user.id?`<div class="muted small" style="margin-bottom:10px">Viewing <strong>${esc(userName(viewUser))}</strong>.</div>`:''}
+    <div class="stat-grid">
+      <div class="stat"><div class="num">${s.total}</div><div class="lbl">Total business miles (${ty})</div></div>
+      <div class="stat ${s.approvedTotal>AMAP_THRESHOLD?'warn':'ok'}"><div class="num">${s.approvedTotal}</div><div class="lbl">Approved (own-car) miles${s.adjMiles?` · incl. ${s.adjMiles} adj.`:''}</div></div>
+      <div class="stat info"><div class="num">${s.remaining}</div><div class="lbl">Remaining at higher rate (to 10,000)</div></div>
+      <div class="stat"><div class="num">${fmtMoney(s.amount)}</div><div class="lbl">Mileage paid</div></div>
+    </div>
+    ${s.adj.length?`<div class="card"><div class="card-head"><h3>Adjustments</h3></div><div class="table-wrap"><table><thead><tr><th>Date</th><th class="num">Miles</th><th>Note</th><th>Added by</th></tr></thead><tbody>
+      ${s.adj.map(a=>`<tr><td>${fmtDate(a.date)}</td><td class="num">${a.miles}</td><td>${esc(a.note||'')}</td><td>${esc(userName(a.created_by))}</td></tr>`).join('')}
+    </tbody></table></div></div>`:''}
+    <div class="card"><div class="card-head"><h3>Mileage claims — ${ty}</h3></div>
+      <div class="table-wrap"><table><thead><tr><th>Date</th><th>Journey</th><th>Category</th><th class="num">Miles</th><th>Rate basis</th><th class="num">Amount</th><th></th></tr></thead><tbody>
+        ${linesSorted.map(l=>`<tr class="clickable" onclick="openReport('${l.report_id}')"><td>${fmtDate(l.line_date)}</td>
+          <td>${esc(l.postcode_from)} → ${esc(l.postcode_to)}<div class="small muted">${esc(l._report?.title||'')}</div></td>
+          <td>${esc(l.vehicle_type)}${l.company_car?' <span class="badge b-grey">Company car</span>':''}</td>
+          <td class="num">${round2(l.distance_miles)}</td><td class="small">${esc(mileageRateDesc(l))}</td>
+          <td class="num">${fmtMoney(l.amount)}</td><td>›</td></tr>`).join('')
+        || '<tr><td colspan="7" class="muted" style="text-align:center;padding:24px">No mileage claims this tax year.</td></tr>'}
+      </tbody></table></div></div>`;
+}
+async function addMileageAdjustment(userId, ty){
+  const users = (await idbGetAll('users')).sort((a,b)=>a.full_name.localeCompare(b.full_name));
+  openModal(`<h2>Add mileage adjustment</h2><div class="modal-sub">Record business miles claimed outside the system (e.g. before go-live). These count toward the employee's approved 10,000-mile threshold for the tax year.</div>
+    <div class="form-row"><div class="form-group"><label class="req">Employee</label><select id="ma-user">${optionList(users.map(u=>({value:u.id,label:u.full_name})), userId, true)}</select></div>
+      <div class="form-group"><label class="req">Tax year</label><select id="ma-ty">${recentTaxYears(6).map(t=>`<option ${t===ty?'selected':''}>${t}</option>`).join('')}</select></div></div>
+    <div class="form-row"><div class="form-group"><label class="req">Miles</label><input type="number" step="0.1" id="ma-miles"></div>
+      <div class="form-group"><label>Date recorded</label><input type="date" id="ma-date" value="${today()}"></div></div>
+    <div class="form-group"><label>Note</label><input id="ma-note" placeholder="e.g. Miles claimed Apr–Jun before system go-live"></div>
+    <div class="modal-actions"><button class="btn btn-outline" onclick="closeModal()">Cancel</button><button class="btn btn-primary" onclick="saveMileageAdjustment()">Save adjustment</button></div>`);
+}
+async function saveMileageAdjustment(){
+  const userId=val('ma-user'); const ty=val('ma-ty'); const miles=numVal('ma-miles');
+  if(!userId||!ty||!miles){ toast('Employee, tax year and miles are required','error'); return; }
+  await idbPut('mileage_adjustments',{ id:uuid(), user_id:userId, tax_year:ty, miles, date:val('ma-date')||today(), note:val('ma-note'), created_by:state.user.id, created_at:nowISO() });
+  await logAction('mileage_adjustment',{ user_id:userId, tax_year:ty, miles });
+  window._mtUser=userId; window._mtTY=ty; closeModal(); toast('Adjustment added'); navigate('my-mileage');
+}
+async function exportMileageTracker(ty, userId){
+  const users = await idbGetAll('users');
+  const targets = userId ? users.filter(u=>u.id===userId) : users.sort((a,b)=>a.full_name.localeCompare(b.full_name));
+  const headers=['Employee','Tax year','Own-car miles','Company miles','Adjustment miles','Total miles','Approved total','Remaining to 10k','Amount paid (£)','VAT (£)'];
+  const rows=[];
+  for (const u of targets){ const s=await mileageSummary(u.id, ty); if(userId||s.total>0||s.adjMiles>0) rows.push([u.full_name,ty,s.own,s.company,s.adjMiles,s.total,s.approvedTotal,s.remaining,s.amount.toFixed(2),s.vat.toFixed(2)]); }
+  downloadExcel(`mileage_tracker_${String(ty).replace('/','-')}.xls`,'Mileage',headers,rows,'Mileage tracker '+ty);
 }
 
 // ═══════════════════════════════════════════════
@@ -1326,7 +1464,7 @@ async function exportAllLines(){
       l.line_type==='mileage'?`${l.postcode_from} > ${l.postcode_to}`:nameById(sups,l.supplier_id),
       l.line_type==='mileage'?'Mileage':(cat?.name||''), l.line_type==='mileage'?'':(cat?.nominal_code||''),
       '', nameById(vats,l.vat_rate_id), round2((l.amount||0)-(l.vat_amount||0)).toFixed(2),(l.vat_amount||0).toFixed(2),(l.amount||0).toFixed(2),
-      l.description, l.vehicle_type||'', l.vehicle_reg||'', l.distance_miles||'' ]; });
+      l.description, (l.vehicle_type||'')+(l.company_car?' (Company car)':''), l.vehicle_reg||'', l.distance_miles||'' ]; });
   downloadExcel('all_expenses.xls','AllExpenses',headers,rows,'All expense lines');
 }
 
@@ -1336,7 +1474,7 @@ async function exportAllLines(){
 const REF_DEFS = {
   categories: { title:'Categories', singular:'category', fields:[['name','Name','text',true],['nominal_code','Nominal code','text',false]] },
   departments: { title:'Departments', singular:'department', fields:[['name','Name','text',true],['dept_code','Department code','text',false]] },
-  vehicle_types: { title:'Vehicle Types', singular:'vehicle type', fields:[['name','Name','text',true]] },
+  vehicle_types: { title:'Mileage Rate Categories', singular:'mileage rate category', fields:[['name','Category name','text',true]] },
   vat_rates: { title:'VAT Rates', singular:'VAT rate', fields:[['name','Name','text',true],['percent','Percent (%)','number',true]] },
   suppliers: { title:'Suppliers', singular:'supplier', fields:[['name','Name','text',true]] },
 };
@@ -1368,70 +1506,43 @@ async function saveRef(store, id){
 }
 async function toggleRef(store, id){ const r=await idbGet(store,id); r.active = r.active!==0?0:1; await idbPut(store,r); navigate(state.page); }
 
-// ── Approved mileage rates (HMRC AMAP) — what the employee is PAID per mile ──
+// ── Mileage rates — by category + effective date. Approved ≤10k / >10k + advisory (for VAT & company-car pay) ──
 async function renderMileageRates(c){
-  const rows = (await idbGetAll('mileage_rates')).sort((a,b)=>(a.name||'').localeCompare(b.name||''));
-  setTopbar(`<button class="btn btn-accent" onclick="editMileageRate('')">+ Add approved rate</button>`);
-  c.innerHTML = `<div class="card"><p class="small muted" style="margin-bottom:10px"><strong>Approved (AMAP) rates</strong> are what the employee is reimbursed per mile (e.g. HMRC car 45p for the first 10,000 miles, then 25p). The reclaimable VAT element is set separately under <em>Advisory Fuel Rates</em>.</p>
-    <div class="table-wrap"><table><thead><tr><th>Name</th><th>Vehicle type</th><th class="num">Pay (p/mi)</th><th>Effective</th><th>Status</th><th></th></tr></thead><tbody>
-    ${rows.map(r=>`<tr><td><strong>${esc(r.name)}</strong></td><td>${esc(r.vehicle_type||'Any')}</td>
-      <td class="num">${r.rate_pence}</td><td>${fmtDate(r.effective_from)}</td>
+  const rows = (await idbGetAll('mileage_rates')).sort((a,b)=>(a.vehicle_type||'').localeCompare(b.vehicle_type||'') || (b.effective_from||'').localeCompare(a.effective_from||''));
+  const vats = await refAll('vat_rates');
+  setTopbar(`<button class="btn btn-accent" onclick="editMileageRate('')">+ Add rate</button>`);
+  c.innerHTML = `<div class="card"><p class="small muted" style="margin-bottom:10px">Rates are per <strong>mileage rate category</strong> and <strong>effective date</strong>. The rate applied to a claim is the one whose effective date is on or before the claim date. <em>Approved</em> rates pay own-car claims (45p to 10,000 miles, then 25p); the <em>advisory</em> rate sets the reclaimable VAT and is paid when <em>Company car / car allowance</em> is ticked.</p>
+    <div class="table-wrap"><table><thead><tr><th>Mileage rate category</th><th>Effective from</th><th class="num">Approved ≤10k</th><th class="num">Approved >10k</th><th class="num">Advisory</th><th>VAT rate</th><th>Status</th><th></th></tr></thead><tbody>
+    ${rows.map(r=>`<tr><td><strong>${esc(r.vehicle_type||'—')}</strong></td><td>${fmtDate(r.effective_from)}</td>
+      <td class="num">${r.rate_pence}p</td><td class="num">${r.rate_over_pence}p</td><td class="num">${r.afr_pence}p</td><td>${esc(nameById(vats,r.vat_rate_id))}</td>
       <td>${r.active!==0?'<span class="badge b-green">Active</span>':'<span class="badge b-grey">Inactive</span>'}</td>
       <td><button class="btn btn-sm btn-outline" onclick="editMileageRate('${r.id}')">Edit</button>
       <button class="btn btn-sm btn-outline" onclick="toggleRef('mileage_rates','${r.id}')">${r.active!==0?'Disable':'Enable'}</button></td></tr>`).join('')
-    || '<tr><td colspan="6" class="muted" style="text-align:center;padding:24px">None yet.</td></tr>'}
+    || '<tr><td colspan="8" class="muted" style="text-align:center;padding:24px">None yet.</td></tr>'}
   </tbody></table></div></div>`;
 }
 async function editMileageRate(id){
-  const rec = id ? await idbGet('mileage_rates', id) : { active:1 };
-  const vts = await ref('vehicle_types');
-  openModal(`<h2>${id?'Edit':'Add'} approved mileage rate</h2>
-    <div class="form-group"><label class="req">Name</label><input id="mr-name" value="${esc(rec.name||'')}" placeholder="e.g. HMRC Car/Van (first 10,000 miles)"></div>
-    <div class="form-row-3"><div class="form-group"><label>Vehicle type</label><select id="mr-vt"><option value="">Any</option>${vts.map(v=>`<option ${rec.vehicle_type===v.name?'selected':''}>${esc(v.name)}</option>`).join('')}</select></div>
-      <div class="form-group"><label class="req">Payment rate (p/mile)</label><input type="number" step="0.1" id="mr-rate" value="${rec.rate_pence??''}"></div>
-      <div class="form-group"><label>Effective from</label><input type="date" id="mr-eff" value="${rec.effective_from||today()}"></div></div>
+  const rec = id ? await idbGet('mileage_rates', id) : { active:1, rate_pence:45, rate_over_pence:25 };
+  const cats = await ref('vehicle_types'); const vats = await refAll('vat_rates');
+  openModal(`<h2>${id?'Edit':'Add'} mileage rate</h2>
+    <div class="form-row"><div class="form-group"><label class="req">Mileage rate category</label><select id="mr-cat">${optionList(cats.map(v=>({value:v.name,label:v.name})), rec.vehicle_type, true)}</select></div>
+      <div class="form-group"><label class="req">Effective from</label><input type="date" id="mr-eff" value="${rec.effective_from||today()}"></div></div>
+    <div class="form-row-3">
+      <div class="form-group"><label class="req">Approved ≤10,000 mi (p)</label><input type="number" step="0.1" id="mr-up" value="${rec.rate_pence??''}"></div>
+      <div class="form-group"><label class="req">Approved >10,000 mi (p)</label><input type="number" step="0.1" id="mr-over" value="${rec.rate_over_pence??''}"></div>
+      <div class="form-group"><label class="req">Advisory rate (p)</label><input type="number" step="0.1" id="mr-adv" value="${rec.afr_pence??''}"></div>
+    </div>
+    <div class="form-group"><label>VAT rate (for reclaim)</label><select id="mr-vat">${optionList(vats.map(v=>({value:v.id,label:v.name})), rec.vat_rate_id, true)}</select></div>
     <div class="modal-actions"><button class="btn btn-outline" onclick="closeModal()">Cancel</button><button class="btn btn-primary" onclick="saveMileageRate('${id}')">Save</button></div>`);
 }
 async function saveMileageRate(id){
-  const name=val('mr-name'); const rate=numVal('mr-rate');
-  if(!name||!rate){ toast('Name and payment rate are required','error'); return; }
+  const cat=val('mr-cat'); const up=numVal('mr-up'); const over=numVal('mr-over'); const adv=numVal('mr-adv');
+  if(!cat||!up||!over){ toast('Category and approved rates are required','error'); return; }
+  if(!val('mr-eff')){ toast('Effective date is required','error'); return; }
   const rec = id ? await idbGet('mileage_rates', id) : { id:uuid(), active:1 };
-  Object.assign(rec,{ name, vehicle_type:val('mr-vt'), rate_pence:rate, effective_from:val('mr-eff') });
+  Object.assign(rec,{ vehicle_type:cat, rate_pence:up, rate_over_pence:over, afr_pence:adv, vat_rate_id:val('mr-vat'), effective_from:val('mr-eff') });
+  delete rec.name;
   await idbPut('mileage_rates', rec); closeModal(); navigate('adm-mileage');
-}
-
-// ── Advisory fuel rates (HMRC AFR) — used only to derive reclaimable VAT ──
-async function renderAdvisoryRates(c){
-  const rows = (await idbGetAll('advisory_rates')).sort((a,b)=>(a.name||'').localeCompare(b.name||''));
-  const vats = await refAll('vat_rates');
-  setTopbar(`<button class="btn btn-accent" onclick="editAdvisoryRate('')">+ Add advisory rate</button>`);
-  c.innerHTML = `<div class="card"><p class="small muted" style="margin-bottom:10px"><strong>Advisory fuel rates (AFR)</strong> represent the fuel cost per mile and are used only to calculate the <em>reclaimable VAT</em> on a mileage claim (VAT = miles × AFR × VAT fraction). They do not affect the amount paid to the employee.</p>
-    <div class="table-wrap"><table><thead><tr><th>Name</th><th>Fuel type</th><th class="num">AFR (p/mi)</th><th>VAT rate</th><th>Effective</th><th>Status</th><th></th></tr></thead><tbody>
-    ${rows.map(r=>`<tr><td><strong>${esc(r.name)}</strong></td><td>${esc(r.fuel_type||'—')}</td>
-      <td class="num">${r.afr_pence}</td><td>${esc(nameById(vats,r.vat_rate_id))}</td><td>${fmtDate(r.effective_from)}</td>
-      <td>${r.active!==0?'<span class="badge b-green">Active</span>':'<span class="badge b-grey">Inactive</span>'}</td>
-      <td><button class="btn btn-sm btn-outline" onclick="editAdvisoryRate('${r.id}')">Edit</button>
-      <button class="btn btn-sm btn-outline" onclick="toggleRef('advisory_rates','${r.id}')">${r.active!==0?'Disable':'Enable'}</button></td></tr>`).join('')
-    || '<tr><td colspan="7" class="muted" style="text-align:center;padding:24px">None yet.</td></tr>'}
-  </tbody></table></div></div>`;
-}
-async function editAdvisoryRate(id){
-  const rec = id ? await idbGet('advisory_rates', id) : { active:1 };
-  const vats = await refAll('vat_rates');
-  openModal(`<h2>${id?'Edit':'Add'} advisory fuel rate</h2>
-    <div class="form-group"><label class="req">Name</label><input id="ar-name" value="${esc(rec.name||'')}" placeholder="e.g. Petrol 1401–2000cc"></div>
-    <div class="form-row-3"><div class="form-group"><label>Fuel type</label><input id="ar-fuel" value="${esc(rec.fuel_type||'')}" placeholder="Petrol / Diesel / Electric"></div>
-      <div class="form-group"><label class="req">Advisory fuel rate (p/mile)</label><input type="number" step="0.1" id="ar-afr" value="${rec.afr_pence??''}"></div>
-      <div class="form-group"><label>VAT rate (for reclaim)</label><select id="ar-vat">${optionList(vats.map(v=>({value:v.id,label:v.name})), rec.vat_rate_id, true)}</select></div></div>
-    <div class="form-group"><label>Effective from</label><input type="date" id="ar-eff" value="${rec.effective_from||today()}"></div>
-    <div class="modal-actions"><button class="btn btn-outline" onclick="closeModal()">Cancel</button><button class="btn btn-primary" onclick="saveAdvisoryRate('${id}')">Save</button></div>`);
-}
-async function saveAdvisoryRate(id){
-  const name=val('ar-name'); const afr=numVal('ar-afr');
-  if(!name||!afr){ toast('Name and advisory fuel rate are required','error'); return; }
-  const rec = id ? await idbGet('advisory_rates', id) : { id:uuid(), active:1 };
-  Object.assign(rec,{ name, fuel_type:val('ar-fuel'), afr_pence:afr, vat_rate_id:val('ar-vat'), effective_from:val('ar-eff') });
-  await idbPut('advisory_rates', rec); closeModal(); navigate('adm-advisory');
 }
 
 // ── Users (finance admin) ──
@@ -1501,7 +1612,7 @@ async function resetPwd(id){
   try {
     await openDB();
     await seedDefaults();
-    await ensureSplitRates();
+    await ensureMileageModelV3();
     const sid = sessionStorage.getItem('exp_session');
     if (sid){ const u = await idbGet('users', sid); if (u && u.active){ state.user = u; await enterApp(); } }
   } catch(err){ console.error('Init failed', err); toast('Failed to start: '+err.message,'error'); }
