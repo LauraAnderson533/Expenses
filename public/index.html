@@ -1102,41 +1102,131 @@ async function pdfFirstPageToImage(dataUrl){
   await page.render({ canvasContext: canvas.getContext('2d'), viewport }).promise;
   return canvas.toDataURL('image/png');
 }
+// Extract embedded text directly from a PDF (lossless on digital receipts — no OCR involved).
+// Groups items by approximate y-position so reconstructed lines preserve receipt layout.
+async function pdfExtractText(dataUrl){
+  const pdfjs = await loadPdfJs();
+  const pdf = await pdfjs.getDocument({ data: dataURLtoUint8Array(dataUrl) }).promise;
+  let out = '';
+  const pageCount = Math.min(pdf.numPages, 3);
+  for (let i=1;i<=pageCount;i++){
+    const page = await pdf.getPage(i);
+    const c = await page.getTextContent();
+    // Items have transform[5]=y. Group by ~y to make readable lines.
+    const items = (c.items||[]).map(it=>({ s:(it.str||''), x:it.transform?.[4]||0, y:Math.round(it.transform?.[5]||0) }));
+    items.sort((a,b)=>(b.y-a.y) || (a.x-b.x));
+    let lastY=null, line=[];
+    const lines = [];
+    items.forEach(it=>{
+      if (lastY===null || Math.abs(it.y-lastY) > 3){
+        if (line.length) lines.push(line.join(' ').replace(/\s+/g,' ').trim());
+        line=[];
+      }
+      lastY = it.y;
+      if (it.s.trim()) line.push(it.s);
+    });
+    if (line.length) lines.push(line.join(' ').replace(/\s+/g,' ').trim());
+    out += lines.filter(Boolean).join('\n') + '\n';
+  }
+  return out.trim();
+}
 async function runReceiptScan(){
-  // Prefer the first image; otherwise fall back to the first PDF
   const r = _lineReceipts.find(x=>(x.mime||'').startsWith('image/')) || _lineReceipts.find(x=>(x.mime||'').toLowerCase().includes('pdf'));
   if(!r){ toast('Attach a receipt photo or PDF first','error'); return; }
   toast('Scanning receipt…','info');
-  let imageData = r.data;
-  if ((r.mime||'').toLowerCase().includes('pdf')){
-    try { imageData = await pdfFirstPageToImage(r.data); }
-    catch(e){ toast('Could not read the PDF — needs internet on first scan, or enter manually','error'); return; }
+  let text = '';
+  const isPdf = (r.mime||'').toLowerCase().includes('pdf');
+  if (isPdf){
+    // 1) Try pdf.js text extraction first — accurate on digital PDFs
+    try { text = await pdfExtractText(r.data); } catch(e){ /* fall through */ }
+    // If the PDF has no embedded text (scanned image), fall back to render + OCR
+    if (!text || text.replace(/\s/g,'').length < 30){
+      let imageData;
+      try { imageData = await pdfFirstPageToImage(r.data); }
+      catch(e){ toast('Could not read the PDF — needs internet on first scan, or enter manually','error'); return; }
+      let T; try { T = await loadTesseract(); } catch(e){ toast('Auto-scan needs an internet connection — enter details manually','error'); return; }
+      try { const { data } = await T.recognize(imageData, 'eng'); text = data.text||''; }
+      catch(e){ toast('Could not read the receipt — enter details manually','error'); return; }
+    }
+  } else {
+    let T; try { T = await loadTesseract(); } catch(e){ toast('Auto-scan needs an internet connection — enter details manually','error'); return; }
+    try { const { data } = await T.recognize(r.data, 'eng'); text = data.text||''; }
+    catch(e){ toast('Could not read the receipt — enter details manually','error'); return; }
   }
-  let T; try { T = await loadTesseract(); } catch(e){ toast('Auto-scan needs an internet connection — enter details manually','error'); return; }
-  try{
-    const { data } = await T.recognize(imageData, 'eng');
-    parseReceiptText(data.text || '');
-    toast('Scan complete — please check the fields');
-  }catch(e){ toast('Could not read the receipt — enter details manually','error'); }
+  parseReceiptText(text);
+  toast('Scan complete — please check the fields');
 }
 function parseReceiptText(text){
-  const lines = text.split(/\n/).map(s=>s.trim()).filter(Boolean);
-  // Amount: prefer a line mentioning total, else the largest money value
-  const moneyRe = /(?:£|gbp)?\s*(\d{1,5}[.,]\d{2})/ig;
-  let amounts = [];
-  lines.forEach(l=>{ let m; while((m=moneyRe.exec(l))){ amounts.push({v:parseFloat(m[1].replace(',','.')), total:/total|amount due|to pay|balance/i.test(l), vat:/vat/i.test(l)}); } });
-  const totals = amounts.filter(a=>a.total && !a.vat);
-  const pick = (totals.length?totals:amounts.filter(a=>!a.vat)).sort((a,b)=>b.v-a.v)[0];
-  if (pick){ const f=document.getElementById('el-amount'); if(f){ f.value=pick.v.toFixed(2); } }
-  const vatLine = amounts.find(a=>a.vat);
-  if (vatLine){ const vf=document.getElementById('el-vat'); if(vf) vf.value=vatLine.v.toFixed(2); }
+  const rawLines = text.split(/\n/).map(s=>s.trim()).filter(Boolean);
+  // Extract money amounts (£12, GBP 12.00, 1,234.56, 18.00) per line
+  const moneyRe = /(?:£|gbp\s*)?(\d{1,3}(?:,\d{3})+(?:\.\d{2})?|\d{1,6}\.\d{2})/ig;
+  const lineInfo = rawLines.map(l=>{
+    const amounts = []; let m;
+    const re = new RegExp(moneyRe.source, 'ig');
+    while ((m = re.exec(l))){ const v = parseFloat(m[1].replace(/,/g,'')); if (!isNaN(v)) amounts.push(v); }
+    const lower = l.toLowerCase();
+    const isSubtotal = /\bsubtotal\b/.test(lower) || /\btotal\s+excluding\b/.test(lower) || /\bexcl(?:uding)?\s*(?:vat|tax)\b/.test(lower) || /\bnet\s*total\b/.test(lower);
+    return {
+      raw:l, lower, amounts, isSubtotal,
+      isTotal: !isSubtotal && (/(^|\W)total\b/.test(lower) || /\bamount\s*paid\b/.test(lower) || /\bamount\s*due\b/.test(lower) || /\bbalance\s*due\b/.test(lower) || /\bto\s*pay\b/.test(lower) || /\bgrand\s*total\b/.test(lower)),
+      isVat: /\bvat\b|\bsales\s*tax\b/.test(lower),
+    };
+  });
+  // ── Total amount: take the LAST money on a "Total/Amount paid" line (rightmost = final figure) ──
+  let pickedAmount = NaN;
+  const totalLines = lineInfo.filter(li=>li.isTotal && !li.isVat && li.amounts.length);
+  if (totalLines.length){
+    const amountPaid = totalLines.filter(li=>/\bamount\s*paid\b/.test(li.lower));
+    const pool = amountPaid.length ? amountPaid : totalLines;
+    pickedAmount = Math.max(...pool.map(li=>li.amounts[li.amounts.length-1]));
+  } else {
+    const candidates = lineInfo.filter(li=>!li.isVat && !li.isSubtotal).flatMap(li=>li.amounts);
+    if (candidates.length) pickedAmount = Math.max(...candidates);
+  }
+  if (!isNaN(pickedAmount)){ const f=document.getElementById('el-amount'); if(f) f.value = pickedAmount.toFixed(2); }
+  // ── VAT amount: LAST money on the VAT line (e.g. "VAT (20% on £15.00) £3.00") ──
+  const vatLine = lineInfo.find(li=>li.isVat && li.amounts.length);
+  if (vatLine){ const v = vatLine.amounts[vatLine.amounts.length-1]; const vf=document.getElementById('el-vat'); if(vf) vf.value = v.toFixed(2); }
   else recalcExpenseVat();
-  // Date
-  const dm = text.match(/(\d{1,2})[\/\-.](\d{1,2})[\/\-.](\d{2,4})/);
-  if (dm){ let [_,d,mo,y]=dm; if(y.length===2)y='20'+y; const iso=`${y}-${String(mo).padStart(2,'0')}-${String(d).padStart(2,'0')}`; const f=document.getElementById('el-date'); if(f&&!isNaN(new Date(iso))) f.value=iso; }
-  // Supplier guess = first line with letters
-  const sup = lines.find(l=>/[a-z]{3,}/i.test(l) && !/receipt|invoice|vat|tel|www|tax/i.test(l));
-  if (sup){ const ni=document.getElementById('el-supplier-new'); if(ni){ ni.classList.remove('hidden'); ni.value=sup.slice(0,40); document.getElementById('el-supplier').value=''; } }
+  // ── Date ──
+  applyParsedDate(text);
+  // ── Supplier ──
+  const sup = detectSupplier(rawLines);
+  if (sup){ const ni=document.getElementById('el-supplier-new'); if (ni){ ni.classList.remove('hidden'); ni.value = sup.slice(0,60); document.getElementById('el-supplier').value=''; } }
+}
+function applyParsedDate(text){
+  const months = ['jan','feb','mar','apr','may','jun','jul','aug','sep','oct','nov','dec'];
+  const set = iso => { if (!isNaN(new Date(iso).getTime())){ const f=document.getElementById('el-date'); if(f) f.value=iso; } };
+  let m;
+  // dd/mm/yyyy or dd-mm-yy
+  m = text.match(/(\d{1,2})[\/\-.](\d{1,2})[\/\-.](\d{2,4})/);
+  if (m){ let [, d, mo, y] = m; if (y.length===2) y='20'+y; return set(`${y}-${String(mo).padStart(2,'0')}-${String(d).padStart(2,'0')}`); }
+  // 24 May 2026 / 24th May 2026
+  m = text.match(/\b(\d{1,2})(?:st|nd|rd|th)?\s+(jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)[a-z]*\s+(\d{4})\b/i);
+  if (m){ const mo = months.indexOf(m[2].toLowerCase().slice(0,3))+1; return set(`${m[3]}-${String(mo).padStart(2,'0')}-${String(m[1]).padStart(2,'0')}`); }
+  // May 24, 2026
+  m = text.match(/\b(jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)[a-z]*\s+(\d{1,2}),?\s+(\d{4})\b/i);
+  if (m){ const mo = months.indexOf(m[1].toLowerCase().slice(0,3))+1; return set(`${m[3]}-${String(mo).padStart(2,'0')}-${String(m[2]).padStart(2,'0')}`); }
+}
+function detectSupplier(lines){
+  // 1) Company-suffix match (e.g. "Anthropic, PBC" / "Acme Tools Ltd" / "X Inc")
+  const suffix = /([A-Z][A-Za-z0-9&'’\- .]{1,50}?(?:,?\s*(?:PBC|Inc\.?|LLC|Ltd\.?|Limited|Corp\.?|Corporation|Co\.?|GmbH|S\.?A\.?|N\.?V\.?|B\.?V\.?|plc|PLC|Pty\.?\s*Ltd\.?)))(?:[\s,]|$)/;
+  for (const l of lines){ const m = l.match(suffix); if (m) return m[1].trim(); }
+  // 2) Plausible top-of-receipt brand line
+  const skipRe = /(^|\b)(receipt|invoice|order\s*no|date\b|bill\s*to|sold\s*to|payment|payment\s*history|amount|total|subtotal|vat|gst|sales\s*tax|paid\s*on|paid\b|description|qty|unit|price|tax\b|receipt\s*number|invoice\s*number|date\s*paid|due\s*date|invoice\s*date|order\s*date|customer)(\b|$)/i;
+  const isEmail = l => /@/.test(l);
+  const isUrl = l => /https?:\/\/|www\./i.test(l);
+  const isPriceLine = l => /£|gbp|\$\s?\d|\b\d+\.\d{2}\b/i.test(l);
+  for (let i=0;i<Math.min(15,lines.length);i++){
+    const l = lines[i];
+    if (!/[A-Za-z]{3,}/.test(l)) continue;
+    if (skipRe.test(l)) continue;
+    if (isEmail(l) || isUrl(l)) continue;
+    if (/^\s*\d/.test(l)) continue;     // address-style lines often start with a number
+    if (isPriceLine(l)) continue;
+    return l.slice(0,60);
+  }
+  return null;
 }
 
 async function exportReport(id){
