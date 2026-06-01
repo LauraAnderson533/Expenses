@@ -275,6 +275,36 @@ async function logAction(action, details={}){ try{ await idbPut('audit_log',{ id
 async function getSetting(k,f){ const r=await idbGet('settings',k); return r?r.value:f; }
 async function setSetting(k,v){ return idbPut('settings',{key:k,value:v}); }
 
+// Sequential per-type report reference: KPLEXP-000001 for expense reports, KPLCC-000001 for credit card.
+async function nextReportReference(type){
+  const key = type === 'creditcard' ? 'seq_creditcard' : 'seq_expense';
+  const next = (Number(await getSetting(key, 0)) || 0) + 1;
+  await setSetting(key, next);
+  const prefix = type === 'creditcard' ? 'KPLCC' : 'KPLEXP';
+  return `${prefix}-${String(next).padStart(6,'0')}`;
+}
+// One-shot migration: assign references to any pre-existing reports (in creation order),
+// and seed the per-type sequence counters so future reports continue from the right number.
+async function backfillReportRefs(){
+  if (await getSetting('report_refs_backfilled') === '1') return;
+  const reports = (await idbGetAll('reports')).sort((a,b)=>(a.created_at||'').localeCompare(b.created_at||''));
+  let seqExp = Number(await getSetting('seq_expense', 0)) || 0;
+  let seqCC  = Number(await getSetting('seq_creditcard', 0)) || 0;
+  for (const r of reports){
+    if (r.reference){
+      const n = Number((String(r.reference).match(/(\d+)$/)||[])[1] || 0);
+      if (r.type==='creditcard') seqCC = Math.max(seqCC, n); else seqExp = Math.max(seqExp, n);
+      continue;
+    }
+    if (r.type === 'creditcard'){ seqCC++; r.reference = `KPLCC-${String(seqCC).padStart(6,'0')}`; }
+    else { seqExp++; r.reference = `KPLEXP-${String(seqExp).padStart(6,'0')}`; }
+    await idbPut('reports', r);
+  }
+  await setSetting('seq_expense', seqExp);
+  await setSetting('seq_creditcard', seqCC);
+  await setSetting('report_refs_backfilled', '1');
+}
+
 // ═══════════════════════════════════════════════
 // CONSTANTS
 // ═══════════════════════════════════════════════
@@ -491,6 +521,7 @@ function navItems(){
     items.push({ id:'payment-runs', label:'Payment Runs', ic:'⇄' });
     items.push({ id:'mileage-all', label:'Mileage Tracker', ic:'⛽', onclick:"window._mtUser='ALL';navigate('mileage-all')" });
     items.push({ id:'analytics', label:'Reports', ic:'▣' });
+    items.push({ id:'gl-report', label:'GL Report', ic:'⊞' });
     items.push({ id:'adm-users', label:'Users', ic:'⚷', sec:'Administration' });
     items.push({ id:'adm-categories', label:'Categories', ic:'▤' });
     items.push({ id:'adm-departments', label:'Departments', ic:'▥' });
@@ -525,7 +556,7 @@ async function computeBadges(){
 }
 const PAGE_TITLES = {
   dashboard:'Dashboard', 'my-expenses':'My Expense Reports', 'my-cc':'Company Credit Card', 'my-mileage':'My Mileage', 'mileage-all':'Mileage Tracker — All Employees', approvals:'Approvals',
-  'finance-approvals':'Finance Approvals', 'all-claims':'All Claims', 'payment-runs':'Payment Runs', analytics:'Reports',
+  'finance-approvals':'Finance Approvals', 'all-claims':'All Claims', 'payment-runs':'Payment Runs', analytics:'Reports', 'gl-report':'GL Report',
   'adm-users':'Users', 'adm-categories':'Categories', 'adm-departments':'Departments', 'adm-vehicles':'Mileage Rate Categories',
   'adm-mileage':'Mileage Rates', 'adm-vat':'VAT Rates', 'adm-suppliers':'Suppliers'
 };
@@ -550,6 +581,7 @@ async function navigate(page){
       case 'all-claims': await renderAllClaims(c); break;
       case 'payment-runs': await renderPaymentRuns(c); break;
       case 'analytics': await renderAnalytics(c); break;
+      case 'gl-report': await renderGlReport(c); break;
       case 'adm-users': await renderUsers(c); break;
       case 'adm-categories': await renderRef(c,'categories'); break;
       case 'adm-departments': await renderRef(c,'departments'); break;
@@ -768,7 +800,7 @@ async function renderDashboard(c){
       <div class="table-wrap"><table><thead><tr><th>Report</th><th>Owner</th><th>Type</th><th>Status</th><th class="num">Total</th><th></th></tr></thead><tbody>
         ${all.sort((a,b)=>(b.created_at||'').localeCompare(a.created_at||'')).slice(0,12).map(r=>`
           <tr class="clickable" onclick="openReport('${r.id}')">
-            <td><strong>${esc(r.title)}</strong></td><td>${esc(userName(r.user_id))}</td>
+            <td><strong>${esc(r.title)}</strong>${r.reference?`<div class="small muted">${esc(r.reference)}</div>`:''}</td><td>${esc(userName(r.user_id))}</td>
             <td>${r.type==='creditcard'?'Credit card':'Expense'}</td><td>${statusBadge(r.status)}</td>
             <td class="num">${fmtMoney(r._t.gross)}</td><td>›</td>
           </tr>`).join('') || '<tr><td colspan="6" class="muted">No reports yet.</td></tr>'}
@@ -794,7 +826,7 @@ async function renderReportList(c, type){
     <div class="tabs">${tabsDef.map(([k,l])=>`<div class="tab ${k===active?'active':''}" onclick="setListTab('${k}')">${l}<span class="cnt">${counts[k]}</span></div>`).join('')}</div>
     <div class="card"><div class="table-wrap"><table><thead><tr><th>Report</th><th>Lines</th><th class="num">Net</th><th class="num">VAT</th><th class="num">Total</th><th>Status</th><th></th></tr></thead><tbody>
       ${rows.map(r=>`<tr class="clickable" onclick="openReport('${r.id}')">
-        <td><strong>${esc(r.title)}</strong><div class="small muted">Created ${fmtDate(r.created_at)}</div></td>
+        <td><strong>${esc(r.title)}</strong><div class="small muted">${r.reference?esc(r.reference)+' · ':''}Created ${fmtDate(r.created_at)}</div></td>
         <td>${r._t.count}</td><td class="num">${fmtMoney(r._t.net)}</td><td class="num">${fmtMoney(r._t.vat)}</td>
         <td class="num"><strong>${fmtMoney(r._t.gross)}</strong></td><td>${statusBadge(r.status)}</td><td>›</td></tr>`).join('')
       || `<tr><td colspan="7" class="muted" style="padding:30px;text-align:center">No reports in this category. ${active==='unsubmitted'?'Click <strong>+ New Report</strong> to start.':''}</td></tr>`}
@@ -814,10 +846,11 @@ function newReport(type){
 async function saveNewReport(type){
   const title = val('nr-title'); if(!title){ toast('Enter a report name','error'); return; }
   const id = uuid();
-  await idbPut('reports',{ id, user_id:state.user.id, type, title, status:'unsubmitted',
+  const reference = await nextReportReference(type);
+  await idbPut('reports',{ id, reference, user_id:state.user.id, type, title, status:'unsubmitted',
     submitted_at:null, manager_approved_by:null, manager_approved_at:null, finance_approved_by:null, finance_approved_at:null,
     reimbursed_at:null, payment_run_id:null, rejected_by:null, rejected_at:null, rejection_note:null, notes:val('nr-notes'), created_at:nowISO() });
-  await logAction('report_created',{ report_id:id });
+  await logAction('report_created',{ report_id:id, reference });
   closeModal(); openReport(id);
 }
 
@@ -841,7 +874,7 @@ async function openReport(id){
   const supName = id2 => sups.find(s=>s.id===id2)?.name || '—';
   const vatName = id2 => vats.find(v=>v.id===id2)?.name || '—';
 
-  document.getElementById('page-title').textContent = r.title;
+  document.getElementById('page-title').textContent = `${r.reference?r.reference+' · ':''}${r.title}`;
   setTopbar(`<button class="btn btn-outline btn-sm" onclick="navigate('${isCCt?'my-cc':'my-expenses'}')">‹ Back</button>`);
 
   const dups = await findDuplicatesFor(lines, r.user_id);
@@ -1366,7 +1399,8 @@ async function exportReport(id){
   });
   const t = lineTotals(lines);
   rows.push(['','','','','','TOTAL', t.net.toFixed(2), t.vat.toFixed(2), t.gross.toFixed(2),'','','','','']);
-  downloadExcel(`${r.title.replace(/[^\w]+/g,'_')}.xls`, 'Report', headers, rows, r.title+' — '+userName(r.user_id));
+  const fname = (r.reference || r.title.replace(/[^\w]+/g,'_'));
+  downloadExcel(`${fname}.xls`, 'Report', headers, rows, (r.reference?r.reference+' — ':'') + r.title + ' — ' + userName(r.user_id));
 }
 
 // ═══════════════════════════════════════════════
@@ -1473,14 +1507,14 @@ async function renderApprovals(c){
   c.innerHTML = `
     <div class="card"><div class="card-head"><h3>Awaiting your approval (${queue.length})</h3></div>
       <div class="table-wrap"><table><thead><tr><th>Report</th><th>Owner</th><th>Type</th><th>Submitted</th><th class="num">Total</th><th></th></tr></thead><tbody>
-        ${queue.map(r=>`<tr><td class="clickable" onclick="openApproval('${r.id}','manager')"><strong>${esc(r.title)}</strong></td>
+        ${queue.map(r=>`<tr><td class="clickable" onclick="openApproval('${r.id}','manager')"><strong>${esc(r.title)}</strong>${r.reference?`<div class="small muted">${esc(r.reference)}</div>`:''}</td>
           <td>${esc(userName(r.user_id))}</td><td>${r.type==='creditcard'?'Credit card':'Expense'}</td><td>${fmtDate(r.submitted_at)}</td>
           <td class="num">${fmtMoney(r._t.gross)}</td>
           <td><button class="btn btn-sm btn-success" onclick="openApproval('${r.id}','manager')">Review</button></td></tr>`).join('')
         || '<tr><td colspan="6" class="muted" style="text-align:center;padding:24px">Nothing awaiting your approval.</td></tr>'}
       </tbody></table></div></div>
     ${decided.length?`<div class="card"><h3>Previously approved by you</h3><div class="table-wrap"><table><tbody>
-      ${decided.map(r=>`<tr class="clickable" onclick="openReport('${r.id}')"><td>${esc(r.title)}</td><td>${esc(userName(r.user_id))}</td><td>${statusBadge(r.status)}</td><td class="num">${fmtMoney(r._t.gross)}</td></tr>`).join('')}
+      ${decided.map(r=>`<tr class="clickable" onclick="openReport('${r.id}')"><td>${esc(r.title)}${r.reference?` <span class="small muted">${esc(r.reference)}</span>`:''}</td><td>${esc(userName(r.user_id))}</td><td>${statusBadge(r.status)}</td><td class="num">${fmtMoney(r._t.gross)}</td></tr>`).join('')}
     </tbody></table></div></div>`:''}`;
 }
 async function renderFinanceApprovals(c){
@@ -1489,7 +1523,7 @@ async function renderFinanceApprovals(c){
   for (const r of reports){ if (r.status==='awaiting_finance'){ r._t = lineTotals(await reportLines(r.id)); queue.push(r); } }
   c.innerHTML = `<div class="card"><div class="card-head"><h3>Awaiting finance approval (${queue.length})</h3></div>
     <div class="table-wrap"><table><thead><tr><th>Report</th><th>Owner</th><th>Type</th><th>Mgr approved</th><th class="num">Total</th><th></th></tr></thead><tbody>
-      ${queue.map(r=>`<tr><td class="clickable" onclick="openApproval('${r.id}','finance')"><strong>${esc(r.title)}</strong></td>
+      ${queue.map(r=>`<tr><td class="clickable" onclick="openApproval('${r.id}','finance')"><strong>${esc(r.title)}</strong>${r.reference?`<div class="small muted">${esc(r.reference)}</div>`:''}</td>
         <td>${esc(userName(r.user_id))}</td><td>${r.type==='creditcard'?'Credit card':'Expense'}</td>
         <td>${r.manager_approved_at?userName(r.manager_approved_by):'<span class="muted">direct</span>'}</td>
         <td class="num">${fmtMoney(r._t.gross)}</td>
@@ -1509,7 +1543,7 @@ async function openApproval(id, stage){
     <td>${l.line_type==='mileage'?esc(l.vehicle_type)+' · '+l.distance_miles+'mi':esc(nameById(cats,l.category_id))}</td>
     <td class="num">${fmtMoney(l.vat_amount)}</td><td class="num">${fmtMoney(l.amount)}</td><td>${receiptCountBadge(l)}</td></tr>`; }).join('');
   const dupNotice = dups.size ? `<div class="scan-box" style="background:#fff3e0;border-color:var(--warning)"><strong>⚠ ${dups.size} possible duplicate${dups.size>1?'s':''}</strong> — review the flagged line${dups.size>1?'s':''} before approving. This is a warning only; you can still approve.</div>` : '';
-  openModal(`<h2>${esc(r.title)}</h2><div class="modal-sub">${esc(userName(r.user_id))} · ${r.type==='creditcard'?'Credit card':'Expense'} · Total <strong>${fmtMoney(t.gross)}</strong> (VAT ${fmtMoney(t.vat)})</div>
+  openModal(`<h2>${r.reference?esc(r.reference)+' · ':''}${esc(r.title)}</h2><div class="modal-sub">${esc(userName(r.user_id))} · ${r.type==='creditcard'?'Credit card':'Expense'} · Total <strong>${fmtMoney(t.gross)}</strong> (VAT ${fmtMoney(t.vat)})</div>
     ${dupNotice}
     <div class="table-wrap"><table><thead><tr><th>Date</th><th>Type</th><th>Detail</th><th>Category/Vehicle</th><th class="num">VAT</th><th class="num">Amount</th><th>Rcpt</th></tr></thead><tbody>${rowsHtml}</tbody></table></div>
     <div class="form-group" style="margin-top:14px"><label>Note (required if returning)</label><textarea id="ap-note" rows="2"></textarea></div>
@@ -1566,7 +1600,7 @@ async function renderAllClaims(c){
       <span class="muted small grow">${rows.length} claim(s) — click any row to view or edit</span>
     </div>
     <div class="card"><div class="table-wrap"><table><thead><tr><th>Report</th><th>Employee</th><th>Type</th><th>Status</th><th class="num">Net</th><th class="num">VAT</th><th class="num">Total</th><th></th></tr></thead><tbody>
-      ${rows.map(r=>`<tr class="clickable" onclick="openReport('${r.id}')"><td><strong>${esc(r.title)}</strong><div class="small muted">${fmtDate(r.created_at)}</div></td>
+      ${rows.map(r=>`<tr class="clickable" onclick="openReport('${r.id}')"><td><strong>${esc(r.title)}</strong><div class="small muted">${r.reference?esc(r.reference)+' · ':''}${fmtDate(r.created_at)}</div></td>
         <td>${esc(userName(r.user_id))}</td><td>${r.type==='creditcard'?'Credit card':'Expense'}</td><td>${statusBadge(r.status)}</td>
         <td class="num">${fmtMoney(r._t.net)}</td><td class="num">${fmtMoney(r._t.vat)}</td><td class="num"><strong>${fmtMoney(r._t.gross)}</strong></td><td>›</td></tr>`).join('')
       || '<tr><td colspan="8" class="muted" style="text-align:center;padding:24px">No claims match the filters.</td></tr>'}
@@ -1592,7 +1626,7 @@ async function renderPaymentRuns(c){
     <div class="card"><div class="card-head"><h3>Approved &amp; awaiting reimbursement</h3>
       ${due.length?`<button class="btn btn-sm btn-accent" onclick="createPaymentRun()">Pay all (${fmtMoney(dueTotal)})</button>`:''}</div>
       <div class="table-wrap"><table><thead><tr><th>Report</th><th>Owner</th><th>Approved</th><th class="num">Amount</th><th></th></tr></thead><tbody>
-        ${due.map(r=>`<tr><td class="clickable" onclick="openReport('${r.id}')"><strong>${esc(r.title)}</strong></td><td>${esc(userName(r.user_id))}</td>
+        ${due.map(r=>`<tr><td class="clickable" onclick="openReport('${r.id}')"><strong>${esc(r.title)}</strong>${r.reference?`<div class="small muted">${esc(r.reference)}</div>`:''}</td><td>${esc(userName(r.user_id))}</td>
           <td>${fmtDate(r.finance_approved_at)}</td><td class="num">${fmtMoney(r._t.gross)}</td>
           <td><button class="btn btn-sm btn-success" onclick="markReimbursed('${r.id}')">Mark reimbursed</button></td></tr>`).join('')
         || '<tr><td colspan="5" class="muted" style="text-align:center;padding:24px">Nothing awaiting reimbursement.</td></tr>'}
@@ -1616,7 +1650,7 @@ async function createPaymentRun(){
     <div class="form-row"><div class="form-group"><label>Reference</label><input id="pr-ref" value="${ref}"></div>
       <div class="form-group"><label>Payment date</label><input type="date" id="pr-date" value="${today()}"></div></div>
     <div class="table-wrap"><table><thead><tr><th>Report</th><th>Owner</th><th class="num">Amount</th></tr></thead><tbody>
-      ${due.map(r=>`<tr><td>${esc(r.title)}</td><td>${esc(userName(r.user_id))}</td><td class="num">${fmtMoney(r._t.gross)}</td></tr>`).join('')}
+      ${due.map(r=>`<tr><td>${r.reference?esc(r.reference)+' · ':''}${esc(r.title)}</td><td>${esc(userName(r.user_id))}</td><td class="num">${fmtMoney(r._t.gross)}</td></tr>`).join('')}
       <tr><td colspan="2"><strong>Total</strong></td><td class="num"><strong>${fmtMoney(total)}</strong></td></tr></tbody></table></div>
     <div class="modal-actions"><button class="btn btn-outline" onclick="closeModal()">Cancel</button>
       <button class="btn btn-success" onclick="confirmPaymentRun()">Confirm &amp; mark reimbursed</button></div>`, true);
@@ -1643,7 +1677,7 @@ async function paymentRunDetail(id){
   const p = await idbGet('payment_runs', id);
   const rows = [];
   for (const rid of p.report_ids||[]){ const r=await idbGet('reports',rid); if(!r) continue; const t=lineTotals(await reportLines(rid));
-    rows.push(`<tr class="clickable" onclick="closeModal();openReport('${r.id}')"><td>${esc(userName(r.user_id))}</td><td>${esc(r.title)}</td><td class="num">${fmtMoney(t.net)}</td><td class="num">${fmtMoney(t.vat)}</td><td class="num"><strong>${fmtMoney(t.gross)}</strong></td><td>›</td></tr>`); }
+    rows.push(`<tr class="clickable" onclick="closeModal();openReport('${r.id}')"><td>${esc(userName(r.user_id))}</td><td>${r.reference?esc(r.reference)+' · ':''}${esc(r.title)}</td><td class="num">${fmtMoney(t.net)}</td><td class="num">${fmtMoney(t.vat)}</td><td class="num"><strong>${fmtMoney(t.gross)}</strong></td><td>›</td></tr>`); }
   openModal(`<h2>Payment run ${esc(p.reference)}</h2><div class="modal-sub">${fmtDate(p.run_date)} · raised by ${esc(userName(p.created_by))} · ${(p.report_ids||[]).length} report(s)</div>
     <div class="table-wrap"><table><thead><tr><th>Employee</th><th>Report</th><th class="num">Net</th><th class="num">VAT</th><th class="num">Total</th><th></th></tr></thead><tbody>${rows.join('')}
     <tr><td colspan="4"><strong>Total paid</strong></td><td class="num"><strong>${fmtMoney(p.total)}</strong></td><td></td></tr></tbody></table></div>
@@ -1653,9 +1687,9 @@ async function exportPaymentRun(id){
   const p = await idbGet('payment_runs', id);
   const rows = [];
   for (const rid of p.report_ids||[]){ const r=await idbGet('reports',rid); if(!r) continue; const t=lineTotals(await reportLines(rid));
-    rows.push([userName(r.user_id), r.title, t.net.toFixed(2), t.vat.toFixed(2), t.gross.toFixed(2)]); }
-  rows.push(['','TOTAL','','', p.total.toFixed(2)]);
-  downloadExcel(`${p.reference}.xls`,'PaymentRun',['Employee','Report','Net','VAT','Gross'],rows,'Payment run '+p.reference);
+    rows.push([userName(r.user_id), r.reference||'', r.title, t.net.toFixed(2), t.vat.toFixed(2), t.gross.toFixed(2)]); }
+  rows.push(['','','TOTAL','','', p.total.toFixed(2)]);
+  downloadExcel(`${p.reference}.xls`,'PaymentRun',['Employee','Ref','Report','Net','VAT','Gross'],rows,'Payment run '+p.reference);
 }
 
 // ═══════════════════════════════════════════════
@@ -1715,7 +1749,7 @@ async function drillAgg(kind, encKey){
   const ls = lines.filter(match).sort((a,b)=>(b.line_date||'').localeCompare(a.line_date||''));
   let gross=0, vat=0;
   const rowsHtml = ls.map(l=>{ const r=rById[l.report_id]||{}; const g=Number(l.amount)||0; const v=Number(l.vat_amount)||0; gross+=g; vat+=v;
-    return `<tr class="clickable" onclick="closeModal();openReport('${r.id}')"><td>${fmtDate(l.line_date)}</td><td>${esc(r.title||'')}</td><td>${esc(userName(r.user_id))}</td><td>${l.line_type==='mileage'?'Mileage: '+esc(l.postcode_from)+'→'+esc(l.postcode_to):esc(nameById(sups,l.supplier_id))}</td>
+    return `<tr class="clickable" onclick="closeModal();openReport('${r.id}')"><td>${fmtDate(l.line_date)}</td><td>${r.reference?esc(r.reference)+' · ':''}${esc(r.title||'')}</td><td>${esc(userName(r.user_id))}</td><td>${l.line_type==='mileage'?'Mileage: '+esc(l.postcode_from)+'→'+esc(l.postcode_to):esc(nameById(sups,l.supplier_id))}</td>
       <td class="num">${fmtMoney(g-v)}</td><td class="num">${fmtMoney(v)}</td><td class="num"><strong>${fmtMoney(g)}</strong></td><td>›</td></tr>`; }).join('');
   const title = kind==='user'?userName(key):key;
   openModal(`<h2>${esc(title)}</h2><div class="modal-sub">${ls.length} line(s) · Net ${fmtMoney(round2(gross-vat))} · VAT ${fmtMoney(round2(vat))} · Gross ${fmtMoney(round2(gross))}</div>
@@ -1741,14 +1775,103 @@ async function exportAllLines(){
   const reports = await idbGetAll('reports'); const rById={}; reports.forEach(r=>rById[r.id]=r);
   const lines = await idbGetAll('lines');
   const cats = await refAll('categories'); const sups = await refAll('suppliers'); const vats = await refAll('vat_rates');
-  const headers = ['Report','Employee','Status','Type','Date','Supplier/Journey','Category','Nominal','Dept','VAT rate','Net','VAT','Gross','Description','Vehicle','Reg','Miles'];
+  const headers = ['Reference','Report','Employee','Status','Type','Date','Supplier/Journey','Category','Nominal','Dept','VAT rate','Net','VAT','Gross','Description','Vehicle','Reg','Miles'];
   const rows = lines.map(l=>{ const r=rById[l.report_id]||{}; const owner=state.usersById[r.user_id]; const cat=cats.find(c=>c.id===l.category_id);
-    return [ r.title||'', userName(r.user_id), STATUS_META[r.status]?.label||r.status, l.line_type, l.line_date,
+    return [ r.reference||'', r.title||'', userName(r.user_id), STATUS_META[r.status]?.label||r.status, l.line_type, l.line_date,
       l.line_type==='mileage'?`${l.postcode_from} > ${l.postcode_to}`:nameById(sups,l.supplier_id),
       l.line_type==='mileage'?'Mileage':(cat?.name||''), l.line_type==='mileage'?'':(cat?.nominal_code||''),
       '', nameById(vats,l.vat_rate_id), round2((l.amount||0)-(l.vat_amount||0)).toFixed(2),(l.vat_amount||0).toFixed(2),(l.amount||0).toFixed(2),
       l.description, (l.vehicle_type||'')+(l.company_car?' (Company car)':''), l.vehicle_reg||'', l.distance_miles||'' ]; });
   downloadExcel('all_expenses.xls','AllExpenses',headers,rows,'All expense lines');
+}
+
+// ═══════════════════════════════════════════════
+// GL REPORT — every claim line whose finance approval date falls in the chosen range,
+// with department + nominal codes ready for an ERP journal import.
+// ═══════════════════════════════════════════════
+async function renderGlReport(c){
+  const td = today();
+  const monthStart = td.slice(0,7) + '-01';
+  const from = window._glFrom || monthStart;
+  const to   = window._glTo   || td;
+
+  const reports = await idbGetAll('reports');
+  const allLines = await idbGetAll('lines');
+  const linesByReport = {}; allLines.forEach(l => (linesByReport[l.report_id] = linesByReport[l.report_id] || []).push(l));
+  const cats = await refAll('categories'); const depts = await refAll('departments'); const sups = await refAll('suppliers'); const vats = await refAll('vat_rates');
+  const mileageCat = cats.find(c => c.name === 'Mileage');
+  const inRange = reports.filter(r => r.finance_approved_at && r.finance_approved_at.slice(0,10) >= from && r.finance_approved_at.slice(0,10) <= to);
+
+  const rows = [];
+  for (const r of inRange){
+    const ownr = state.usersById[r.user_id];
+    const dept = depts.find(d => d.id === ownr?.department_id);
+    const rls = (linesByReport[r.id] || []).sort((a,b)=>(a.line_date||'').localeCompare(b.line_date||''));
+    for (const l of rls){
+      const isMile = l.line_type === 'mileage';
+      const cat = isMile ? mileageCat : cats.find(c => c.id === l.category_id);
+      const gross = Number(l.amount)||0, vat = Number(l.vat_amount)||0;
+      rows.push({
+        ref: r.reference || '', type: r.type==='creditcard'?'Credit Card':'Expense',
+        approved_at: r.finance_approved_at?.slice(0,10) || '',
+        employee: userName(r.user_id), department: dept?.name || '', dept_code: dept?.dept_code || '',
+        line_date: l.line_date || '',
+        detail: isMile ? `${l.postcode_from} → ${l.postcode_to}` : nameById(sups, l.supplier_id),
+        category: cat?.name || (isMile?'Mileage':''), nominal: cat?.nominal_code || '',
+        vat_rate: nameById(vats, l.vat_rate_id),
+        net: round2(gross - vat), vat, gross,
+        description: l.description || '',
+        vehicle: isMile ? (l.vehicle_type||'')+(l.company_car?' (Company car)':'') : '',
+        reg: isMile ? (l.vehicle_reg || '') : '',
+        miles: isMile ? (l.distance_miles || '') : '',
+        status: STATUS_META[r.status]?.label || r.status,
+        report_id: r.id
+      });
+    }
+  }
+  const totals = rows.reduce((s,x)=>({net:s.net+x.net, vat:s.vat+x.vat, gross:s.gross+x.gross}), {net:0,vat:0,gross:0});
+  window._glRows = rows; window._glRange = { from, to };
+
+  setTopbar(`<button class="btn btn-accent" onclick="exportGlReport()">Export to Excel</button>`);
+  c.innerHTML = `
+    <div class="card"><p class="small muted" style="margin-bottom:8px">All claim lines whose <strong>finance approval date</strong> falls in the chosen range — including the employee's department code and the category's nominal code, so the journal can be posted into the ERP. Includes <strong>expense</strong> and <strong>credit-card</strong> claims.</p>
+      <div class="toolbar">
+        <label class="small muted">From</label><input type="date" id="gl-from" value="${from}" onchange="window._glFrom=this.value;navigate('gl-report')">
+        <label class="small muted">To</label><input type="date" id="gl-to" value="${to}" onchange="window._glTo=this.value;navigate('gl-report')">
+        <span class="grow small muted">${rows.length} line(s) across ${inRange.length} report(s)</span>
+      </div>
+    </div>
+    <div class="stat-grid">
+      <div class="stat"><div class="num">${fmtMoney(round2(totals.net))}</div><div class="lbl">Net</div></div>
+      <div class="stat info"><div class="num">${fmtMoney(round2(totals.vat))}</div><div class="lbl">VAT</div></div>
+      <div class="stat ok"><div class="num">${fmtMoney(round2(totals.gross))}</div><div class="lbl">Gross</div></div>
+      <div class="stat"><div class="num">${rows.length}</div><div class="lbl">Lines</div></div>
+    </div>
+    <div class="card"><div class="table-wrap"><table>
+      <thead><tr>
+        <th>Ref</th><th>Type</th><th>Approved</th><th>Employee</th><th>Department</th><th>Dept code</th>
+        <th>Date</th><th>Supplier / Journey</th><th>Category</th><th>Nominal</th>
+        <th>VAT rate</th><th class="num">Net</th><th class="num">VAT</th><th class="num">Gross</th>
+        <th>Description</th><th>Status</th>
+      </tr></thead><tbody>
+        ${rows.map(x=>`<tr class="clickable" onclick="openReport('${x.report_id}')">
+          <td><strong>${esc(x.ref)}</strong></td><td>${esc(x.type)}</td><td>${fmtDate(x.approved_at)}</td>
+          <td>${esc(x.employee)}</td><td>${esc(x.department)}</td><td>${esc(x.dept_code)}</td>
+          <td>${fmtDate(x.line_date)}</td><td>${esc(x.detail)}${x.reg||x.miles?'<div class="small muted">'+esc(x.vehicle)+' '+esc(x.reg)+(x.miles?' · '+x.miles+'mi':'')+'</div>':''}</td>
+          <td>${esc(x.category)}</td><td>${esc(x.nominal)}</td>
+          <td>${esc(x.vat_rate)}</td><td class="num">${fmtMoney(x.net)}</td><td class="num">${fmtMoney(x.vat)}</td><td class="num"><strong>${fmtMoney(x.gross)}</strong></td>
+          <td class="small muted">${esc(x.description)}</td>
+          <td>${esc(x.status)}</td></tr>`).join('') || '<tr><td colspan="16" class="muted" style="text-align:center;padding:24px">No claims finance-approved in this date range.</td></tr>'}
+      </tbody></table></div></div>`;
+}
+function exportGlReport(){
+  const rows = window._glRows || [];
+  const range = window._glRange || {};
+  const headers = ['Reference','Type','Final approval date','Employee','Department','Dept code','Date','Supplier/Journey','Category','Nominal','VAT rate','Net','VAT','Gross','Description','Vehicle','Reg','Miles','Status'];
+  const exRows = rows.map(x => [x.ref, x.type, x.approved_at, x.employee, x.department, x.dept_code, x.line_date, x.detail, x.category, x.nominal, x.vat_rate, x.net.toFixed(2), x.vat.toFixed(2), x.gross.toFixed(2), x.description, x.vehicle, x.reg, x.miles, x.status]);
+  const totals = rows.reduce((s,x)=>({net:s.net+x.net, vat:s.vat+x.vat, gross:s.gross+x.gross}), {net:0,vat:0,gross:0});
+  exRows.push(['','','','','','','','','','','TOTAL', totals.net.toFixed(2), totals.vat.toFixed(2), totals.gross.toFixed(2), '','','','','']);
+  downloadExcel(`GL_${range.from||''}_to_${range.to||''}.xls`, 'GL', headers, exRows, `GL report — ${range.from} to ${range.to}`);
 }
 
 // ═══════════════════════════════════════════════
@@ -1927,6 +2050,7 @@ function setupReceiptHoverPreview(){
     await seedDefaults();
     await ensureMileageModelV3();
     await migrateDemoCcuserRoles();
+    await backfillReportRefs();
     setupReceiptHoverPreview();
     const sid = sessionStorage.getItem('exp_session');
     if (sid){ const u = await idbGet('users', sid); if (u && u.active){ state.user = u; await enterApp(); } }
