@@ -239,8 +239,8 @@
 // database.js so it can move to the Node backend unchanged.
 // ═══════════════════════════════════════════════════════════════
 const DB_NAME = 'KomfortExpenses';
-const DB_VERSION = 3;
-const STORES = ['users','categories','departments','vehicle_types','mileage_rates','advisory_rates','mileage_adjustments','suppliers','vat_rates','reports','lines','payment_runs','settings','audit_log'];
+const DB_VERSION = 4;
+const STORES = ['users','categories','departments','locations','vehicle_types','mileage_rates','advisory_rates','mileage_adjustments','suppliers','vat_rates','reports','lines','payment_runs','settings','audit_log'];
 let db = null;
 
 function openDB(){
@@ -248,7 +248,7 @@ function openDB(){
     const req = indexedDB.open(DB_NAME, DB_VERSION);
     req.onupgradeneeded = e => {
       const d = e.target.result;
-      const simple = ['categories','departments','vehicle_types','mileage_rates','advisory_rates','mileage_adjustments','suppliers','vat_rates','payment_runs'];
+      const simple = ['categories','departments','locations','vehicle_types','mileage_rates','advisory_rates','mileage_adjustments','suppliers','vat_rates','payment_runs'];
       simple.forEach(s => { if(!d.objectStoreNames.contains(s)) d.createObjectStore(s,{keyPath:'id'}); });
       if(!d.objectStoreNames.contains('users')){ const s=d.createObjectStore('users',{keyPath:'id'}); s.createIndex('username','username',{unique:true}); }
       if(!d.objectStoreNames.contains('reports')){ const s=d.createObjectStore('reports',{keyPath:'id'}); s.createIndex('user_id','user_id'); s.createIndex('status','status'); }
@@ -342,6 +342,9 @@ async function seedDefaults(){
     ['Installation','INS'],['Design','DSN'],['Management','MGT']],'departments',['name','dept_code']);
   for (const d of depts) await idbPut('departments', d);
 
+  const locs = mk([['North'],['South'],['Axcess 10']],'locations',['name']);
+  for (const l of locs) await idbPut('locations', l);
+
   // Mileage rate categories + HMRC rates (effective 1 Mar 2026)
   await seedMileageCategoriesAndRates(vatStd);
   await setSetting('mileage_model','v3');
@@ -351,18 +354,21 @@ async function seedDefaults(){
 
   // Users with role combinations + approval chain
   const financeId = uuid(), managerId = uuid(), empId = uuid(), ccId = uuid();
-  const u = async (id,username,pwd,full,email,roles,dept,a1,a2)=> idbPut('users',{
+  const u = async (id,username,pwd,full,email,roles,dept,loc,a1,a2)=> idbPut('users',{
     id, username, password_hash: await sha256(pwd), full_name:full, email,
-    roles, department_id:dept, approver1_id:a1||null, approver2_id:a2||null,
+    roles, department_id:dept, location_id:loc, approver1_id:a1||null, approver2_id:a2||null,
     active:1, must_change_password:false, created_at:nowISO()
   });
   const finDept = depts.find(d=>d.name==='Finance').id;
   const opsDept = depts.find(d=>d.name==='Operations').id;
   const salDept = depts.find(d=>d.name==='Sales').id;
-  await u(financeId,'finance','admin123','Helen Foster','h.foster@komfort.com',['employee','manager','finance','credit_card'],finDept,null,null);
-  await u(managerId,'manager','manager123','Sarah Mitchell','s.mitchell@komfort.com',['employee','manager','credit_card'],opsDept,null,financeId);
-  await u(empId,'employee','employee123','James Okafor','j.okafor@komfort.com',['employee'],opsDept,managerId,financeId);
-  await u(ccId,'ccuser','ccuser123','Priya Sharma','p.sharma@komfort.com',['credit_card'],salDept,managerId,financeId);
+  const locNorth  = locs.find(l=>l.name==='North').id;
+  const locSouth  = locs.find(l=>l.name==='South').id;
+  const locAx10   = locs.find(l=>l.name==='Axcess 10').id;
+  await u(financeId,'finance','admin123','Helen Foster','h.foster@komfort.com',['employee','manager','finance','credit_card'],finDept,locNorth,null,null);
+  await u(managerId,'manager','manager123','Sarah Mitchell','s.mitchell@komfort.com',['employee','manager','credit_card'],opsDept,locNorth,null,financeId);
+  await u(empId,'employee','employee123','James Okafor','j.okafor@komfort.com',['employee'],opsDept,locAx10,managerId,financeId);
+  await u(ccId,'ccuser','ccuser123','Priya Sharma','p.sharma@komfort.com',['credit_card'],salDept,locSouth,managerId,financeId);
 
   // Sample report with one expense + one mileage line (unsubmitted, owned by employee)
   const rptId = uuid();
@@ -412,6 +418,23 @@ async function ensureMileageModelV3(){
   for (const a of await idbGetAll('advisory_rates')) await idbDelete('advisory_rates', a.id);
   await seedMileageCategoriesAndRates();
   await setSetting('mileage_model','v3');
+}
+// Ensure the Locations reference list exists, and back-fill the demo users' locations once.
+async function ensureLocations(){
+  if ((await idbGetAll('locations')).length === 0){
+    for (const name of ['North','South','Axcess 10']){
+      await idbPut('locations', { id: uuid(), name, active: 1 });
+    }
+  }
+  if (await getSetting('demo_locations_assigned') === '1') return;
+  const locs = await idbGetAll('locations');
+  const byName = n => locs.find(l => l.name === n)?.id;
+  const map = { finance: byName('North'), manager: byName('North'), employee: byName('Axcess 10'), ccuser: byName('South') };
+  for (const user of await idbGetAll('users')){
+    const want = map[user.username];
+    if (want && !user.location_id){ user.location_id = want; await idbPut('users', user); }
+  }
+  await setSetting('demo_locations_assigned', '1');
 }
 // One-shot demo migration: original seed gave ccuser ['employee','credit_card']; new seed is ['credit_card']
 // only. Update existing local DBs once, unless an admin has already changed the roles.
@@ -525,6 +548,7 @@ function navItems(){
     items.push({ id:'adm-users', label:'Users', ic:'⚷', sec:'Administration' });
     items.push({ id:'adm-categories', label:'Categories', ic:'▤' });
     items.push({ id:'adm-departments', label:'Departments', ic:'▥' });
+    items.push({ id:'adm-locations', label:'Locations', ic:'⌂' });
     items.push({ id:'adm-vehicles', label:'Mileage Rate Categories', ic:'⛐' });
     items.push({ id:'adm-mileage', label:'Mileage Rates', ic:'⛽' });
     items.push({ id:'adm-vat', label:'VAT Rates', ic:'%' });
@@ -557,7 +581,7 @@ async function computeBadges(){
 const PAGE_TITLES = {
   dashboard:'Dashboard', 'my-expenses':'My Expense Reports', 'my-cc':'Company Credit Card', 'my-mileage':'My Mileage', 'mileage-all':'Mileage Tracker — All Employees', approvals:'Approvals',
   'finance-approvals':'Finance Approvals', 'all-claims':'All Claims', 'payment-runs':'Payment Runs', analytics:'Reports', 'gl-report':'GL Report',
-  'adm-users':'Users', 'adm-categories':'Categories', 'adm-departments':'Departments', 'adm-vehicles':'Mileage Rate Categories',
+  'adm-users':'Users', 'adm-categories':'Categories', 'adm-departments':'Departments', 'adm-locations':'Locations', 'adm-vehicles':'Mileage Rate Categories',
   'adm-mileage':'Mileage Rates', 'adm-vat':'VAT Rates', 'adm-suppliers':'Suppliers'
 };
 async function navigate(page){
@@ -585,6 +609,7 @@ async function navigate(page){
       case 'adm-users': await renderUsers(c); break;
       case 'adm-categories': await renderRef(c,'categories'); break;
       case 'adm-departments': await renderRef(c,'departments'); break;
+      case 'adm-locations': await renderRef(c,'locations'); break;
       case 'adm-vehicles': await renderRef(c,'vehicle_types'); break;
       case 'adm-mileage': await renderMileageRates(c); break;
       case 'adm-vat': await renderRef(c,'vat_rates'); break;
@@ -1903,6 +1928,7 @@ function exportGlReport(){
 const REF_DEFS = {
   categories: { title:'Categories', singular:'category', fields:[['name','Name','text',true],['nominal_code','Nominal code','text',false]] },
   departments: { title:'Departments', singular:'department', fields:[['name','Name','text',true],['dept_code','Department code','text',false]] },
+  locations: { title:'Locations', singular:'location', fields:[['name','Name','text',true]] },
   vehicle_types: { title:'Mileage Rate Categories', singular:'mileage rate category', fields:[['name','Category name','text',true]] },
   vat_rates: { title:'VAT Rates', singular:'VAT rate', fields:[['name','Name','text',true],['percent','Percent (%)','number',true]] },
   suppliers: { title:'Suppliers', singular:'supplier', fields:[['name','Name','text',true]] },
@@ -1978,11 +2004,12 @@ async function saveMileageRate(id){
 async function renderUsers(c){
   const users = (await idbGetAll('users')).sort((a,b)=>a.full_name.localeCompare(b.full_name));
   const depts = await refAll('departments');
+  const locs = await refAll('locations');
   setTopbar(`<button class="btn btn-accent" onclick="editUser('')">+ Add user</button>`);
-  c.innerHTML = `<div class="card"><div class="table-wrap"><table><thead><tr><th>Name</th><th>Username</th><th>Roles</th><th>Department</th><th>1st approver</th><th>2nd approver</th><th>Status</th><th></th></tr></thead><tbody>
+  c.innerHTML = `<div class="card"><div class="table-wrap"><table><thead><tr><th>Name</th><th>Username</th><th>Roles</th><th>Department</th><th>Location</th><th>1st approver</th><th>2nd approver</th><th>Status</th><th></th></tr></thead><tbody>
     ${users.map(u=>`<tr><td><strong>${esc(u.full_name)}</strong><div class="small muted">${esc(u.email||'')}</div></td><td>${esc(u.username)}</td>
       <td><div class="chips">${ROLES.map(r=>`<span class="chip ${u.roles.includes(r.key)?'on':''}">${r.label}</span>`).join('')}</div></td>
-      <td>${esc(nameById(depts,u.department_id))}</td><td>${esc(userName(u.approver1_id))}</td><td>${esc(userName(u.approver2_id))}</td>
+      <td>${esc(nameById(depts,u.department_id))}</td><td>${esc(nameById(locs,u.location_id))}</td><td>${esc(userName(u.approver1_id))}</td><td>${esc(userName(u.approver2_id))}</td>
       <td>${u.active?'<span class="badge b-green">Active</span>':'<span class="badge b-grey">Disabled</span>'}</td>
       <td><button class="btn btn-sm btn-outline" onclick="editUser('${u.id}')">Edit</button>
       <button class="btn btn-sm btn-outline" onclick="resetPwd('${u.id}')">Reset PW</button></td></tr>`).join('')}
@@ -1992,6 +2019,7 @@ async function editUser(id){
   const users = await idbGetAll('users');
   const rec = id ? users.find(u=>u.id===id) : { roles:['employee'], active:1 };
   const depts = await ref('departments');
+  const locs = await ref('locations');
   const managers = users.filter(u=>u.roles.includes('manager'));
   const finance = users.filter(u=>u.roles.includes('finance'));
   openModal(`<h2>${id?'Edit':'Add'} user</h2>
@@ -2002,7 +2030,10 @@ async function editUser(id){
     <div class="form-group"><label>Roles</label><div class="form-row" style="grid-template-columns:1fr 1fr">
       ${ROLES.map(r=>`<label class="chk"><input type="checkbox" class="u-role" value="${r.key}" ${rec.roles?.includes(r.key)?'checked':''}> ${r.label}</label>`).join('')}
     </div></div>
-    <div class="form-group"><label>Department</label><select id="u-dept">${optionList(depts.map(d=>({value:d.id,label:`${d.name} (${d.dept_code||''})`})), rec.department_id, true)}</select></div>
+    <div class="form-row">
+      <div class="form-group"><label>Department</label><select id="u-dept">${optionList(depts.map(d=>({value:d.id,label:`${d.name} (${d.dept_code||''})`})), rec.department_id, true)}</select></div>
+      <div class="form-group"><label class="req">Location</label><select id="u-loc">${optionList(locs.map(l=>({value:l.id,label:l.name})), rec.location_id, true)}</select></div>
+    </div>
     <fieldset><legend>Approval routing</legend>
       <div class="form-row">
         <div class="form-group"><label>1st approver (manager)</label><select id="u-app1">${optionList(managers.map(m=>({value:m.id,label:m.full_name})), rec.approver1_id, true)}</select><div class="small muted">Receives the report first.</div></div>
@@ -2016,11 +2047,14 @@ async function saveUser(id){
   if(!name||!username){ toast('Name and username required','error'); return; }
   const roles=[...document.querySelectorAll('.u-role:checked')].map(x=>x.value);
   if(!roles.length){ toast('Select at least one role','error'); return; }
+  const location_id = val('u-loc');
+  if(!location_id){ toast('Location is required','error'); return; }
   const users = await idbGetAll('users');
   if(!id && users.some(u=>u.username===username)){ toast('Username already exists','error'); return; }
   const rec = id ? users.find(u=>u.id===id) : { id:uuid(), created_at:nowISO(), must_change_password:true };
   rec.full_name=name; rec.username=username; rec.email=val('u-email'); rec.roles=roles;
-  rec.department_id=val('u-dept'); rec.approver1_id=val('u-app1')||null; rec.approver2_id=val('u-app2')||null;
+  rec.department_id=val('u-dept'); rec.location_id=location_id;
+  rec.approver1_id=val('u-app1')||null; rec.approver2_id=val('u-app2')||null;
   rec.active = id ? (document.getElementById('u-active')?.checked?1:0) : 1;
   const pwd = val('u-pwd');
   if (pwd) rec.password_hash = await sha256(pwd);
@@ -2072,6 +2106,7 @@ function setupReceiptHoverPreview(){
     await openDB();
     await seedDefaults();
     await ensureMileageModelV3();
+    await ensureLocations();
     await migrateDemoCcuserRoles();
     await backfillReportRefs();
     setupReceiptHoverPreview();
