@@ -2444,9 +2444,9 @@ function exportGlReport(){
 // ADMIN — generic reference data
 // ═══════════════════════════════════════════════
 const REF_DEFS = {
-  categories: { title:'Categories', singular:'category', fields:[['name','Name','text',true],['nominal_code','Nominal code','text',false]] },
-  departments: { title:'Departments', singular:'department', fields:[['name','Name','text',true],['dept_code','Department code','text',false]] },
-  locations: { title:'Locations', singular:'location', fields:[['name','Name','text',true],['location_code','Location code','text',false]] },
+  categories: { title:'Categories', singular:'category', fields:[['name','Name','text',true],['nominal_code','Nominal code','text',true]] },
+  departments: { title:'Departments', singular:'department', fields:[['name','Name','text',true],['dept_code','Department code','text',true]] },
+  locations: { title:'Locations', singular:'location', fields:[['name','Name','text',true],['location_code','Location code','text',true]] },
   vehicle_types: { title:'Mileage Rate Categories', singular:'mileage rate category', fields:[['name','Category name','text',true]] },
   vat_rates: { title:'VAT Rates', singular:'VAT rate', fields:[['name','Name','text',true],['percent','Percent (%)','number',true]] },
   suppliers: { title:'Suppliers', singular:'supplier', fields:[['name','Name','text',true]] },
@@ -2568,7 +2568,7 @@ async function editUser(id){
       ${ROLES.map(r=>`<label class="chk"><input type="checkbox" class="u-role" value="${r.key}" ${rec.roles?.includes(r.key)?'checked':''}> ${r.label}</label>`).join('')}
     </div></div>
     <div class="form-row">
-      <div class="form-group"><label>Department</label><select id="u-dept">${optionList(depts.map(d=>({value:d.id,label:`${d.name} (${d.dept_code||''})`})), rec.department_id, true)}</select></div>
+      <div class="form-group"><label class="req">Department</label><select id="u-dept">${optionList(depts.map(d=>({value:d.id,label:`${d.name} (${d.dept_code||''})`})), rec.department_id, true)}</select></div>
       <div class="form-group"><label class="req">Location</label><select id="u-loc">${optionList(locs.map(l=>({value:l.id,label:l.name})), rec.location_id, true)}</select></div>
     </div>
     <fieldset><legend>Approval routing</legend>
@@ -2584,13 +2584,15 @@ async function saveUser(id){
   if(!name||!username){ toast('Name and username required','error'); return; }
   const roles=[...document.querySelectorAll('.u-role:checked')].map(x=>x.value);
   if(!roles.length){ toast('Select at least one role','error'); return; }
+  const department_id = val('u-dept');
+  if(!department_id){ toast('Department is required','error'); return; }
   const location_id = val('u-loc');
   if(!location_id){ toast('Location is required','error'); return; }
   const users = await idbGetAll('users');
   if(!id && users.some(u=>u.username===username)){ toast('Username already exists','error'); return; }
   const rec = id ? users.find(u=>u.id===id) : { id:uuid(), created_at:nowISO(), must_change_password:true };
   rec.full_name=name; rec.username=username; rec.email=val('u-email'); rec.roles=roles;
-  rec.department_id=val('u-dept'); rec.location_id=location_id;
+  rec.department_id=department_id; rec.location_id=location_id;
   rec.approver1_id=val('u-app1')||null; rec.approver2_id=val('u-app2')||null;
   rec.active = id ? (document.getElementById('u-active')?.checked?1:0) : 1;
   const pwd = val('u-pwd');
