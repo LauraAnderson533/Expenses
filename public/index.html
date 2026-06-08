@@ -920,10 +920,10 @@ async function lineNavGo(direction){
   else openExpenseLineModal(nextLine);
 }
 // Persist the current line's form state without closing the modal — used when stepping next/prev.
-// Read-only viewers (managers using Detailed Review) bypass the save entirely.
+// Read-only viewers (Detailed Review by non-finance users) bypass the save entirely.
 async function saveCurrentLineSilent(){
-  if (!isFinance()) return;
   const nav = window._lineNav; if (!nav) return;
+  if (nav.readOnly) return;
   const id = nav.ids[nav.idx]; if (!id) return;
   const line = await idbGet('lines', id); if (!line) return;
   if (document.getElementById('el-amount')){
@@ -1218,7 +1218,7 @@ async function editLine(id){
     const all = (await reportLines(state.currentReportId)).sort((a,b)=>(a.line_date||'').localeCompare(b.line_date||''));
     const ids = all.map(x=>x.id);
     const idx = ids.indexOf(id);
-    window._lineNav = ids.length > 1 ? { ids, idx } : null;
+    window._lineNav = ids.length > 1 ? { ids, idx, readOnly:false } : null;
   }
   if (l.line_type === 'mileage') openMileageLineModal(l);
   else openExpenseLineModal(l);
@@ -1231,7 +1231,9 @@ async function openExpenseLineModal(line){
   const supOpts = optionList(sups.map(s=>({value:s.id,label:s.name})), line?.supplier_id, true);
   const vatOpts = optionList(vats.filter(v=>v.active!==0).map(v=>({value:v.id,label:`${v.name}`})), line?.vat_rate_id || vats.find(v=>v.name.includes('Standard'))?.id, false);
   const editMode = !!line;
-  const canEdit = isFinance();
+  // Read-only only applies when a Detailed Review was started by a non-finance user.
+  // Add mode and regular Edit (via the line's Edit button) always remain editable.
+  const canEdit = !editMode || !window._lineNav?.readOnly;
   const formFields = `
     <div class="form-row"><div class="form-group"><label class="req">Date</label><input type="date" id="el-date" value="${line?.line_date||today()}"></div>
       <div class="form-group"><label>Supplier</label><select id="el-supplier">${supOpts}</select>
@@ -1333,7 +1335,7 @@ async function openMileageLineModal(line){
   const catOpts = optionList(cats.map(v=>({value:v.name,label:v.name})), line?.vehicle_type, true);
   const companyChecked = line ? !!line.company_car : true;
   const editMode = !!line;
-  const canEdit = isFinance();
+  const canEdit = !editMode || !window._lineNav?.readOnly;
   const formFields = `
     <div class="form-row"><div class="form-group"><label class="req">Date</label><input type="date" id="ml-date" value="${line?.line_date||today()}" onchange="recalcMileage()"></div>
       <div class="form-group"><label class="req">Vehicle reg</label><input id="ml-reg" value="${esc(line?.vehicle_reg||'')}" placeholder="e.g. YK19 ABC"></div></div>
@@ -2053,13 +2055,18 @@ async function approveReport(id, stage){
   await idbPut('reports', r); await logAction('report_approved',{report_id:id,stage});
   closeModal(); toast('Approved'); navigate(state.page);
 }
-// Open the first line of a report in the side-by-side line modal so a reviewer can step through with Prev/Next.
+// Open the first line of a report in the side-by-side line modal so a reviewer can step through
+// with Prev/Next. For non-finance users, the form fields are locked (read-only review).
 async function openDetailedReview(reportId, stage){
   const lines = (await reportLines(reportId)).sort((a,b)=>(a.line_date||'').localeCompare(b.line_date||''));
   if (!lines.length){ toast('This report has no lines to review','error'); return; }
   state.currentReportId = reportId;
   if (stage) window._reviewStage = stage;
-  await editLine(lines[0].id);
+  const ids = lines.map(l=>l.id);
+  window._lineNav = { ids, idx:0, readOnly: !isFinance() };
+  const first = lines[0];
+  if (first.line_type === 'mileage') openMileageLineModal(first);
+  else openExpenseLineModal(first);
 }
 async function rejectReport(id){
   const note = val('ap-note'); if(!note){ toast('Please add a note explaining what to change','error'); return; }
