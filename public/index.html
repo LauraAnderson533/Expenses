@@ -2247,7 +2247,7 @@ async function renderGlReport(c){
   const reports = await idbGetAll('reports');
   const allLines = await idbGetAll('lines');
   const linesByReport = {}; allLines.forEach(l => (linesByReport[l.report_id] = linesByReport[l.report_id] || []).push(l));
-  const cats = await refAll('categories'); const depts = await refAll('departments'); const sups = await refAll('suppliers'); const vats = await refAll('vat_rates');
+  const cats = await refAll('categories'); const depts = await refAll('departments'); const locs = await refAll('locations'); const sups = await refAll('suppliers'); const vats = await refAll('vat_rates');
   const mileageCat = cats.find(c => c.name === 'Mileage');
   const inRange = reports.filter(r => r.finance_approved_at && r.finance_approved_at.slice(0,10) >= from && r.finance_approved_at.slice(0,10) <= to && (!typeFilter || r.type === typeFilter));
 
@@ -2255,6 +2255,7 @@ async function renderGlReport(c){
   for (const r of inRange){
     const ownr = state.usersById[r.user_id];
     const dept = depts.find(d => d.id === ownr?.department_id);
+    const loc  = locs.find(l => l.id === ownr?.location_id);
     const rls = (linesByReport[r.id] || []).sort((a,b)=>(a.line_date||'').localeCompare(b.line_date||''));
     for (const l of rls){
       const isMile = l.line_type === 'mileage';
@@ -2264,6 +2265,7 @@ async function renderGlReport(c){
         ref: r.reference || '', type: r.type==='creditcard'?'Credit Card':'Expense',
         approved_at: r.finance_approved_at?.slice(0,10) || '',
         employee: userName(r.user_id), department: dept?.name || '', dept_code: dept?.dept_code || '',
+        location: loc?.name || '', location_code: loc?.location_code || '',
         line_date: l.line_date || '',
         detail: isMile ? `${l.postcode_from} → ${l.postcode_to}` : nameById(sups, l.supplier_id),
         category: cat?.name || (isMile?'Mileage':''), nominal: cat?.nominal_code || '',
@@ -2303,7 +2305,7 @@ async function renderGlReport(c){
     </div>
     <div class="card"><div class="table-wrap"><table>
       <thead><tr>
-        <th>Ref</th><th>Type</th><th>Approved</th><th>Employee</th><th>Department</th><th>Dept code</th>
+        <th>Ref</th><th>Type</th><th>Approved</th><th>Employee</th><th>Department</th><th>Dept code</th><th>Location</th><th>Loc code</th>
         <th>Date</th><th>Supplier / Journey</th><th>Category</th><th>Nominal</th>
         <th>VAT rate</th><th class="num">Net</th><th class="num">VAT</th><th class="num">Gross</th>
         <th>Description</th><th>Status</th>
@@ -2311,20 +2313,21 @@ async function renderGlReport(c){
         ${rows.map(x=>`<tr class="clickable" onclick="openReport('${x.report_id}')">
           <td><strong>${esc(x.ref)}</strong></td><td>${esc(x.type)}</td><td>${fmtDate(x.approved_at)}</td>
           <td>${esc(x.employee)}</td><td>${esc(x.department)}</td><td>${esc(x.dept_code)}</td>
+          <td>${esc(x.location)}</td><td>${esc(x.location_code)}</td>
           <td>${fmtDate(x.line_date)}</td><td>${esc(x.detail)}${x.reg||x.miles?'<div class="small muted">'+esc(x.vehicle)+' '+esc(x.reg)+(x.miles?' · '+x.miles+'mi':'')+'</div>':''}</td>
           <td>${esc(x.category)}</td><td>${esc(x.nominal)}</td>
           <td>${esc(x.vat_rate)}</td><td class="num">${fmtMoney(x.net)}</td><td class="num">${fmtMoney(x.vat)}</td><td class="num"><strong>${fmtMoney(x.gross)}</strong></td>
           <td class="small muted">${esc(x.description)}</td>
-          <td>${esc(x.status)}</td></tr>`).join('') || '<tr><td colspan="16" class="muted" style="text-align:center;padding:24px">No claims finance-approved in this date range.</td></tr>'}
+          <td>${esc(x.status)}</td></tr>`).join('') || '<tr><td colspan="18" class="muted" style="text-align:center;padding:24px">No claims finance-approved in this date range.</td></tr>'}
       </tbody></table></div></div>`;
 }
 function exportGlReport(){
   const rows = window._glRows || [];
   const range = window._glRange || {};
-  const headers = ['Reference','Type','Final approval date','Employee','Department','Dept code','Date','Supplier/Journey','Category','Nominal','VAT rate','Net','VAT','Gross','Description','Vehicle','Reg','Miles','Status'];
-  const exRows = rows.map(x => [x.ref, x.type, x.approved_at, x.employee, x.department, x.dept_code, x.line_date, x.detail, x.category, x.nominal, x.vat_rate, x.net.toFixed(2), x.vat.toFixed(2), x.gross.toFixed(2), x.description, x.vehicle, x.reg, x.miles, x.status]);
+  const headers = ['Reference','Type','Final approval date','Employee','Department','Dept code','Location','Location code','Date','Supplier/Journey','Category','Nominal','VAT rate','Net','VAT','Gross','Description','Vehicle','Reg','Miles','Status'];
+  const exRows = rows.map(x => [x.ref, x.type, x.approved_at, x.employee, x.department, x.dept_code, x.location, x.location_code, x.line_date, x.detail, x.category, x.nominal, x.vat_rate, x.net.toFixed(2), x.vat.toFixed(2), x.gross.toFixed(2), x.description, x.vehicle, x.reg, x.miles, x.status]);
   const totals = rows.reduce((s,x)=>({net:s.net+x.net, vat:s.vat+x.vat, gross:s.gross+x.gross}), {net:0,vat:0,gross:0});
-  exRows.push(['','','','','','','','','','','TOTAL', totals.net.toFixed(2), totals.vat.toFixed(2), totals.gross.toFixed(2), '','','','','']);
+  exRows.push(['','','','','','','','','','','','','TOTAL', totals.net.toFixed(2), totals.vat.toFixed(2), totals.gross.toFixed(2), '','','','','']);
   const typeLabel = range.type === 'expense' ? 'Expense' : range.type === 'creditcard' ? 'CreditCard' : 'All';
   downloadExcel(`GL_${typeLabel}_${range.from||''}_to_${range.to||''}.xls`, 'GL', headers, exRows, `GL report (${typeLabel}) — ${range.from} to ${range.to}`);
 }
