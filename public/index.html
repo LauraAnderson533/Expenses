@@ -605,6 +605,7 @@ function navItems(){
     items.push({ id:'mileage-all', label:'Mileage Tracker', ic:'⛽', onclick:"window._mtUser='ALL';navigate('mileage-all')" });
     items.push({ id:'analytics', label:'Reports', ic:'▣' });
     items.push({ id:'gl-report', label:'GL Report', ic:'⊞' });
+    items.push({ id:'cc-report', label:'Credit Card Report', ic:'▭' });
     items.push({ id:'adm-settings', label:'Company Details', ic:'⚙', sec:'Administration' });
     items.push({ id:'adm-users', label:'Users', ic:'⚷' });
     items.push({ id:'adm-categories', label:'Categories', ic:'▤' });
@@ -647,7 +648,7 @@ async function computeBadges(){
 }
 const PAGE_TITLES = {
   dashboard:'Dashboard', 'my-expenses':'My Expense Reports', 'my-cc':'Company Credit Card', 'my-mileage':'My Mileage', 'mileage-all':'Mileage Tracker — All Employees', approvals:'Approvals',
-  'finance-approvals':'Finance Approvals', 'all-claims':'All Claims', 'payment-runs':'Payment Runs', analytics:'Reports', 'gl-report':'GL Report',
+  'finance-approvals':'Finance Approvals', 'all-claims':'All Claims', 'payment-runs':'Payment Runs', analytics:'Reports', 'gl-report':'GL Report', 'cc-report':'Credit Card Report',
   'adm-settings':'Company Details', 'adm-users':'Users', 'adm-categories':'Categories', 'adm-departments':'Departments', 'adm-locations':'Locations', 'adm-vehicles':'Mileage Rate Categories',
   'adm-mileage':'Mileage Rates', 'adm-vat':'VAT Rates', 'adm-suppliers':'Suppliers'
 };
@@ -673,6 +674,7 @@ async function navigate(page){
       case 'payment-runs': await renderPaymentRuns(c); break;
       case 'analytics': await renderAnalytics(c); break;
       case 'gl-report': await renderGlReport(c); break;
+      case 'cc-report': await renderCcReport(c); break;
       case 'adm-users': await renderUsers(c); break;
       case 'adm-settings': await renderCompanySettings(c); break;
       case 'adm-categories': await renderRef(c,'categories'); break;
@@ -937,6 +939,7 @@ async function saveCurrentLineSilent(){
     line.amount       = round2(numVal('el-amount'));
     line.vat_rate_id  = val('el-vat-rate');
     line.vat_amount   = round2(numVal('el-vat'));
+    if (document.getElementById('el-pfdept')) line.purchase_for_dept_id = val('el-pfdept') || '';
     line.receipts     = _lineReceipts;
     await idbPut('lines', line);
   } else if (document.getElementById('ml-dist')){
@@ -1230,6 +1233,13 @@ async function openExpenseLineModal(line){
   const catOpts = optionList(cats.map(c=>({value:c.id,label:`${c.name}${c.nominal_code?' ('+c.nominal_code+')':''}`})), line?.category_id, true);
   const supOpts = optionList(sups.map(s=>({value:s.id,label:s.name})), line?.supplier_id, true);
   const vatOpts = optionList(vats.filter(v=>v.active!==0).map(v=>({value:v.id,label:`${v.name}`})), line?.vat_rate_id || vats.find(v=>v.name.includes('Standard'))?.id, false);
+  // For credit card reports, show a "Purchase for department" dropdown — defaults to the report owner's home dept.
+  const _report = state.currentReportId ? await idbGet('reports', state.currentReportId) : null;
+  const isCcReport = _report?.type === 'creditcard';
+  const depts = isCcReport ? await ref('departments') : [];
+  const ownerHomeDept = isCcReport ? state.usersById[_report.user_id]?.department_id : '';
+  const pfdValue = line?.purchase_for_dept_id || ownerHomeDept || '';
+  const pfdOpts = optionList(depts.map(d=>({value:d.id, label:`${d.name}${d.dept_code?' ('+d.dept_code+')':''}`})), pfdValue, false);
   const editMode = !!line;
   // Read-only only applies when a Detailed Review was started by a non-finance user.
   // Add mode and regular Edit (via the line's Edit button) always remain editable.
@@ -1255,7 +1265,9 @@ async function openExpenseLineModal(line){
         <div style="display:flex;gap:6px"><input type="number" step="0.01" id="el-vat" value="${line?.vat_amount??''}" oninput="_vatManual=true" style="flex:1">
         ${canEdit?`<button type="button" class="btn btn-sm btn-outline" title="Recalculate from rate" onclick="_vatManual=false;recalcExpenseVat()">↻ Auto</button>`:''}</div>
         <div class="small muted">Auto-calculated, but you can type any VAT amount — it won't be overwritten.</div></div>
-      <div class="form-group"><label>Description</label><input id="el-desc" value="${esc(line?.description||'')}"></div></div>`;
+      <div class="form-group"><label>Description</label><input id="el-desc" value="${esc(line?.description||'')}"></div></div>
+    ${isCcReport ? `<div class="form-group"><label class="req">Purchase for department</label><select id="el-pfdept">${pfdOpts}</select>
+        <div class="small muted">Drives the department + code used on the GL Report for this line.</div></div>` : ''}`;
   const actions = canEdit ? `<div class="modal-actions">
       <button class="btn btn-outline" onclick="runReceiptScan()">⮌ Scan receipt</button>
       <button class="btn btn-outline" onclick="closeModal()">Cancel</button>
@@ -1315,6 +1327,7 @@ async function saveExpenseLine(id){
     supplier_id: supplierId, category_id: val('el-category'),
     amount: round2(amount), vat_rate_id: val('el-vat-rate'), vat_amount: round2(numVal('el-vat')),
     postcode_from:'', postcode_to:'', distance_miles:0, vehicle_type:'', vehicle_reg:'', mileage_rate_id:'',
+    purchase_for_dept_id: val('el-pfdept') || '',
     receipts: _lineReceipts, created_at: nowISO()
   };
   await idbPut('lines', line);
@@ -2361,18 +2374,22 @@ async function renderGlReport(c){
   const rows = [];
   for (const r of inRange){
     const ownr = state.usersById[r.user_id];
-    const dept = depts.find(d => d.id === ownr?.department_id);
+    const ownerDept = depts.find(d => d.id === ownr?.department_id);
     const loc  = locs.find(l => l.id === ownr?.location_id);
     const rls = (linesByReport[r.id] || []).sort((a,b)=>(a.line_date||'').localeCompare(b.line_date||''));
     for (const l of rls){
       const isMile = l.line_type === 'mileage';
       const cat = isMile ? mileageCat : cats.find(c => c.id === l.category_id);
       const gross = Number(l.amount)||0, vat = Number(l.vat_amount)||0;
-      const dc = dept?.dept_code || '', lc = loc?.location_code || '', nc = cat?.nominal_code || '';
+      // For credit card lines, the per-line "purchase for department" drives the GL coding (falling back to the employee's home dept)
+      const lineDept = (r.type === 'creditcard' && l.purchase_for_dept_id)
+        ? (depts.find(d => d.id === l.purchase_for_dept_id) || ownerDept)
+        : ownerDept;
+      const dc = lineDept?.dept_code || '', lc = loc?.location_code || '', nc = cat?.nominal_code || '';
       rows.push({
         ref: r.reference || '', type: r.type==='creditcard'?'Credit Card':'Expense',
         approved_at: r.finance_approved_at?.slice(0,10) || '',
-        employee: userName(r.user_id), department: dept?.name || '', dept_code: dc,
+        employee: userName(r.user_id), department: lineDept?.name || '', dept_code: dc,
         location: loc?.name || '', location_code: lc,
         line_date: l.line_date || '',
         detail: isMile ? `${l.postcode_from} → ${l.postcode_to}` : nameById(sups, l.supplier_id),
@@ -2438,6 +2455,88 @@ function exportGlReport(){
   exRows.push(['','','','','','','','','','','','','','TOTAL', totals.net.toFixed(2), totals.vat.toFixed(2), totals.gross.toFixed(2), '','','','','']);
   const typeLabel = range.type === 'expense' ? 'Expense' : range.type === 'creditcard' ? 'CreditCard' : 'All';
   downloadExcel(`GL_${typeLabel}_${range.from||''}_to_${range.to||''}.xls`, 'GL', headers, exRows, `GL report (${typeLabel}) — ${range.from} to ${range.to}`);
+}
+
+// ═══════════════════════════════════════════════
+// CREDIT CARD REPORT — every credit-card line in the chosen date range,
+// with the per-line "purchase for department" so finance can see what each card was used for.
+// ═══════════════════════════════════════════════
+async function renderCcReport(c){
+  const td = today();
+  const monthStart = td.slice(0,7) + '-01';
+  const from = window._ccFrom || monthStart;
+  const to   = window._ccTo   || td;
+  const empFilter = window._ccEmp || '';
+
+  const reports = await idbGetAll('reports');
+  const allLines = await idbGetAll('lines');
+  const linesByReport = {}; allLines.forEach(l => (linesByReport[l.report_id] = linesByReport[l.report_id] || []).push(l));
+  const cats = await refAll('categories'); const depts = await refAll('departments'); const sups = await refAll('suppliers');
+  const users = (await idbGetAll('users')).sort((a,b)=>a.full_name.localeCompare(b.full_name));
+  const ccUsers = users.filter(u => (u.roles||[]).includes('credit_card'));
+
+  const ccReports = reports.filter(r => r.type === 'creditcard' && (!empFilter || r.user_id === empFilter));
+  const rows = [];
+  for (const r of ccReports){
+    const ownr = state.usersById[r.user_id];
+    const rls = (linesByReport[r.id] || []).filter(l => l.line_date >= from && l.line_date <= to);
+    for (const l of rls){
+      const cat = cats.find(c => c.id === l.category_id);
+      const gross = Number(l.amount)||0, vat = Number(l.vat_amount)||0;
+      const pfDeptId = l.purchase_for_dept_id || ownr?.department_id;
+      const pfDept = depts.find(d => d.id === pfDeptId);
+      rows.push({
+        date: l.line_date || '', employee: userName(r.user_id), report_ref: r.reference || '',
+        supplier: nameById(sups, l.supplier_id), category: cat?.name || '',
+        net: round2(gross - vat), vat, gross,
+        purchase_for_dept: pfDept?.name || '—', dept_code: pfDept?.dept_code || '',
+        description: l.description || '', status: STATUS_META[r.status]?.label || r.status,
+        report_id: r.id
+      });
+    }
+  }
+  rows.sort((a,b) => (b.date||'').localeCompare(a.date||''));
+  const totals = rows.reduce((s,x)=>({net:s.net+x.net, vat:s.vat+x.vat, gross:s.gross+x.gross}), {net:0,vat:0,gross:0});
+  window._ccRows = rows; window._ccRange = { from, to, emp: empFilter };
+
+  setTopbar(`<button class="btn btn-accent" onclick="exportCcReport()">Export to Excel</button>`);
+  c.innerHTML = `
+    <div class="card"><p class="small muted" style="margin-bottom:8px">All <strong>credit card</strong> lines in the chosen date range, showing the <em>purchase for department</em> per line.</p>
+      <div class="toolbar">
+        <label class="small muted">From</label><input type="date" id="cc-from" value="${from}" onchange="window._ccFrom=this.value;navigate('cc-report')">
+        <label class="small muted">To</label><input type="date" id="cc-to" value="${to}" onchange="window._ccTo=this.value;navigate('cc-report')">
+        <label class="small muted">Employee</label><select onchange="window._ccEmp=this.value;navigate('cc-report')">
+          <option value="">All employees</option>
+          ${ccUsers.map(u=>`<option value="${u.id}" ${empFilter===u.id?'selected':''}>${esc(u.full_name)}</option>`).join('')}
+        </select>
+        <span class="grow small muted">${rows.length} line(s)</span>
+      </div>
+    </div>
+    <div class="stat-grid">
+      <div class="stat"><div class="num">${fmtMoney(round2(totals.net))}</div><div class="lbl">Net</div></div>
+      <div class="stat info"><div class="num">${fmtMoney(round2(totals.vat))}</div><div class="lbl">VAT</div></div>
+      <div class="stat ok"><div class="num">${fmtMoney(round2(totals.gross))}</div><div class="lbl">Gross</div></div>
+      <div class="stat"><div class="num">${rows.length}</div><div class="lbl">Lines</div></div>
+    </div>
+    <div class="card"><div class="table-wrap"><table>
+      <thead><tr><th>Date</th><th>Employee</th><th>Report</th><th>Supplier</th><th>Category</th><th class="num">Net</th><th class="num">VAT</th><th class="num">Gross</th><th>Purchase for dept</th><th>Description</th><th>Status</th></tr></thead><tbody>
+        ${rows.map(x=>`<tr class="clickable" onclick="openReport('${x.report_id}')">
+          <td>${fmtDate(x.date)}</td><td>${esc(x.employee)}</td><td><strong>${esc(x.report_ref)}</strong></td>
+          <td>${esc(x.supplier)}</td><td>${esc(x.category)}</td>
+          <td class="num">${fmtMoney(x.net)}</td><td class="num">${fmtMoney(x.vat)}</td><td class="num"><strong>${fmtMoney(x.gross)}</strong></td>
+          <td>${esc(x.purchase_for_dept)}${x.dept_code?` <span class="small muted">${esc(x.dept_code)}</span>`:''}</td>
+          <td class="small muted">${esc(x.description)}</td>
+          <td>${esc(x.status)}</td></tr>`).join('') || '<tr><td colspan="11" class="muted" style="text-align:center;padding:24px">No credit card lines in this range.</td></tr>'}
+      </tbody></table></div></div>`;
+}
+function exportCcReport(){
+  const rows = window._ccRows || [];
+  const range = window._ccRange || {};
+  const headers = ['Date','Employee','Report','Supplier','Category','Net','VAT','Gross','Purchase for dept','Dept code','Description','Status'];
+  const exRows = rows.map(x => [x.date, x.employee, x.report_ref, x.supplier, x.category, x.net.toFixed(2), x.vat.toFixed(2), x.gross.toFixed(2), x.purchase_for_dept, x.dept_code, x.description, x.status]);
+  const totals = rows.reduce((s,x)=>({net:s.net+x.net, vat:s.vat+x.vat, gross:s.gross+x.gross}), {net:0,vat:0,gross:0});
+  exRows.push(['','','','','TOTAL', totals.net.toFixed(2), totals.vat.toFixed(2), totals.gross.toFixed(2),'','','','']);
+  downloadExcel(`CreditCard_${range.from||''}_to_${range.to||''}.xls`, 'CreditCard', headers, exRows, `Credit Card Report — ${range.from} to ${range.to}`);
 }
 
 // ═══════════════════════════════════════════════
