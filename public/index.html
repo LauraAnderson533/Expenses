@@ -2472,6 +2472,9 @@ async function renderCcReport(c){
   // Non-finance credit-card users are always scoped to their own spend
   const fin = isFinance();
   const empFilter = fin ? (window._ccEmp || '') : state.user.id;
+  const supFilter = window._ccSup || '';
+  const catFilter = window._ccCat || '';
+  const pfdFilter = window._ccPfd || '';
   if (!fin) document.getElementById('page-title').textContent = 'My Credit Card Spend';
 
   const reports = await idbGetAll('reports');
@@ -2491,6 +2494,10 @@ async function renderCcReport(c){
       const gross = Number(l.amount)||0, vat = Number(l.vat_amount)||0;
       const pfDeptId = l.purchase_for_dept_id || ownr?.department_id;
       const pfDept = depts.find(d => d.id === pfDeptId);
+      // Apply supplier / category / purchase-for-dept filters
+      if (supFilter && l.supplier_id !== supFilter) continue;
+      if (catFilter && l.category_id !== catFilter) continue;
+      if (pfdFilter && pfDeptId !== pfdFilter) continue;
       rows.push({
         date: l.line_date || '', employee: userName(r.user_id), report_ref: r.reference || '',
         supplier: nameById(sups, l.supplier_id), category: cat?.name || '',
@@ -2515,6 +2522,19 @@ async function renderCcReport(c){
           <option value="">All employees</option>
           ${ccUsers.map(u=>`<option value="${u.id}" ${empFilter===u.id?'selected':''}>${esc(u.full_name)}</option>`).join('')}
         </select>` : ''}
+        <label class="small muted">Supplier</label><select onchange="window._ccSup=this.value;navigate('cc-report')">
+          <option value="">All suppliers</option>
+          ${[...sups].sort((a,b)=>a.name.localeCompare(b.name)).map(s=>`<option value="${s.id}" ${supFilter===s.id?'selected':''}>${esc(s.name)}</option>`).join('')}
+        </select>
+        <label class="small muted">Category</label><select onchange="window._ccCat=this.value;navigate('cc-report')">
+          <option value="">All categories</option>
+          ${[...cats].sort((a,b)=>a.name.localeCompare(b.name)).map(c=>`<option value="${c.id}" ${catFilter===c.id?'selected':''}>${esc(c.name)}</option>`).join('')}
+        </select>
+        <label class="small muted">Purchase for dept</label><select onchange="window._ccPfd=this.value;navigate('cc-report')">
+          <option value="">All departments</option>
+          ${[...depts].sort((a,b)=>a.name.localeCompare(b.name)).map(d=>`<option value="${d.id}" ${pfdFilter===d.id?'selected':''}>${esc(d.name)}${d.dept_code?' ('+esc(d.dept_code)+')':''}</option>`).join('')}
+        </select>
+        ${(supFilter||catFilter||pfdFilter||(fin&&empFilter))?`<button class="btn btn-sm btn-outline" onclick="window._ccSup='';window._ccCat='';window._ccPfd='';${fin?'window._ccEmp=\'\';':''}navigate('cc-report')">Reset filters</button>`:''}
         <span class="grow small muted">${rows.length} line(s)</span>
       </div>
     </div>
