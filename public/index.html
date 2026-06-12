@@ -2529,6 +2529,7 @@ function parseCcStatementCsv(text){
   const dateCol = headers.findIndex(h => /^date$/.test(h));
   const descCol = headers.findIndex(h => /description/.test(h));
   const amtCol  = headers.findIndex(h => /transaction.*amount|^amount$/.test(h));
+  const stmtCol = headers.findIndex(h => /statement.*amount/.test(h));
   if (dateCol < 0 || descCol < 0 || amtCol < 0) return [];
   const txs = [];
   for (let i = headerIdx + 1; i < lines.length; i++){
@@ -2536,8 +2537,13 @@ function parseCcStatementCsv(text){
     if (parts.length < Math.max(dateCol, descCol, amtCol) + 1) continue;
     const date = _parseStatementDate(parts[dateCol]);
     const desc = (parts[descCol] || '').trim().replace(/\s+/g,' ');
-    const amount = Math.abs(parseFloat(String(parts[amtCol]).replace(/[£,]/g,'').replace(/[^0-9.-]/g,'')));
-    if (!date || isNaN(amount) || amount === 0) continue;
+    // Komfort convention: Transaction Amount is signed (charges -ve, credits +ve).
+    // We flip it so charges show as +ve (matching a report line) and credits as -ve.
+    const raw = parseFloat(String(parts[amtCol]).replace(/[£,]/g,'').replace(/[^0-9.-]/g,''));
+    if (isNaN(raw) || raw === 0 || !date) continue;
+    let amount = -raw;
+    // Belt-and-braces: if the Statement Amount column says "CR" explicitly and our amount came out +ve, force -ve.
+    if (stmtCol >= 0 && /\bCR\b/i.test(String(parts[stmtCol])) && amount > 0) amount = -amount;
     txs.push({ id: uuid(), date, description: desc, amount: round2(amount), ticked: false, matched_line_id: null });
   }
   return txs;
@@ -2547,13 +2553,14 @@ async function parseCcStatementPdf(dataUrl){
   try { text = await pdfExtractText(dataUrl); } catch(e){ return []; }
   const txs = [];
   for (const line of text.split(/\n/)){
-    // Date + description + money (at end). Tolerates "CR/DR" suffix.
-    const m = line.match(/(\d{1,2}\s+(?:jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)[a-z]*\s+\d{2,4})\s+(.+?)\s+(-?£?[\d,]+\.\d{2})(?:\s*(?:CR|DR))?\s*$/i);
+    // Date + description + money (at end). Captures any "CR/DR" suffix so we can sign credits negative.
+    const m = line.match(/(\d{1,2}\s+(?:jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)[a-z]*\s+\d{2,4})\s+(.+?)\s+(-?£?[\d,]+\.\d{2})\s*(CR|DR)?\s*$/i);
     if (!m) continue;
     const date = _parseStatementDate(m[1]);
     const desc = m[2].trim().replace(/\s+/g,' ');
-    const amount = Math.abs(parseFloat(m[3].replace(/[£,]/g,'')));
+    let amount = Math.abs(parseFloat(m[3].replace(/[£,]/g,'')));
     if (!date || isNaN(amount) || amount === 0) continue;
+    if (m[4] && /CR/i.test(m[4])) amount = -amount;          // credit/refund -> negative
     txs.push({ id: uuid(), date, description: desc, amount: round2(amount), ticked: false, matched_line_id: null });
   }
   return txs;
@@ -2631,12 +2638,16 @@ async function renderReconcileModal(){
   const txList = txs.length === 0
     ? `<div class="empty small" style="padding:30px"><span class="ic">📑</span>No statement uploaded yet. Upload a CSV or PDF above.</div>`
     : `<div class="table-wrap"><table><thead><tr><th style="width:34px"></th><th>Date</th><th>Description</th><th class="num">Amount</th></tr></thead><tbody>
-        ${txs.map(t=>`<tr style="${t.ticked?'background:#e3f3e4':''}">
-          <td><input type="checkbox" ${t.ticked?'checked':''} onchange="toggleReconTx('${t.id}')"></td>
-          <td class="small">${fmtDate(t.date)}</td>
-          <td class="small">${esc(t.description.slice(0,55))}${t.description.length>55?'…':''}</td>
-          <td class="num">${fmtMoney(t.amount)}</td>
-        </tr>`).join('')}</tbody></table></div>`;
+        ${txs.map(t=>{
+          const isCredit = t.amount < 0;
+          const rowStyle = t.ticked ? 'background:#e3f3e4' : (isCredit ? 'background:#e8f4f8' : '');
+          return `<tr style="${rowStyle}">
+            <td><input type="checkbox" ${t.ticked?'checked':''} onchange="toggleReconTx('${t.id}')"></td>
+            <td class="small">${fmtDate(t.date)}</td>
+            <td class="small">${esc(t.description.slice(0,55))}${t.description.length>55?'…':''}${isCredit?' <span class="badge b-blue" style="font-size:.65rem">CR</span>':''}</td>
+            <td class="num"${isCredit?' style="color:var(--info);font-weight:600"':''}>${fmtMoney(t.amount)}</td>
+          </tr>`;
+        }).join('')}</tbody></table></div>`;
   const lineList = lines.length === 0
     ? '<div class="empty small" style="padding:30px"><span class="ic">📋</span>No lines on this report yet.</div>'
     : `<div class="table-wrap"><table><thead><tr><th style="width:34px"></th><th>Date</th><th>Supplier</th><th class="num">Amount</th></tr></thead><tbody>
