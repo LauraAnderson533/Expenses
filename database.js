@@ -4,7 +4,11 @@ const path = require('path');
 const bcrypt = require('bcryptjs');
 const { v4: uuidv4 } = require('uuid');
 
-const DB_PATH = path.join(__dirname, 'data', 'expenses-system.db');
+// DATA_DIR lets the database live on a persistent disk in production
+// (e.g. a Render persistent disk mounted at /var/data). Falls back to a
+// local ./data folder for development.
+const DATA_DIR = process.env.DATA_DIR || path.join(__dirname, 'data');
+const DB_PATH = path.join(DATA_DIR, 'expenses-system.db');
 
 let db = null;
 let SQL = null;
@@ -17,8 +21,7 @@ setInterval(() => { if (db) saveDb(); }, 30000);
 
 async function initDb() {
   if (db) return db;
-  const dataDir = path.join(__dirname, 'data');
-  if (!fs.existsSync(dataDir)) fs.mkdirSync(dataDir, { recursive: true });
+  if (!fs.existsSync(DATA_DIR)) fs.mkdirSync(DATA_DIR, { recursive: true });
   SQL = await initSqlJs();
   db = fs.existsSync(DB_PATH) ? new SQL.Database(fs.readFileSync(DB_PATH)) : new SQL.Database();
   db.run('PRAGMA foreign_keys = ON');
