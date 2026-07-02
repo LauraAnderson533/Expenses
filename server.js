@@ -1,104 +1,201 @@
+// Komfort Expenses System — shared multi-user API server.
+// Serves the front-end and exposes a small REST API that mirrors the app's
+// data helpers, backed by one shared SQLite database (see database.js), with
+// real login (JWT + bcrypt) and role-based permissions.
 const express = require('express');
 const cors = require('cors');
 const path = require('path');
 const bcrypt = require('bcryptjs');
 const jwt = require('jsonwebtoken');
 const { v4: uuidv4 } = require('uuid');
-const { initDb, queryAll, queryGet, runSql } = require('./database');
+const store = require('./database');
 
 const app = express();
 const PORT = process.env.PORT || 3000;
-const JWT_SECRET = process.env.JWT_SECRET || 'expenses-system-secret-change-in-production';
+const JWT_SECRET = process.env.JWT_SECRET || 'expenses-dev-secret-change-me';
 
 app.use(cors());
 app.use(express.json({ limit: '25mb' }));
 app.use(express.static(path.join(__dirname, 'public')));
 
-// ── Auth ──
+// ── Helpers ──
+const REF_STORES = ['categories', 'departments', 'locations', 'vehicle_types',
+  'mileage_rates', 'advisory_rates', 'mileage_adjustments', 'suppliers', 'vat_rates'];
+const FINANCE_ONLY_READ = ['audit_log', 'payment_runs'];
+
+function keyField(s) { return s === 'settings' ? 'key' : 'id'; }
+function role(user, r) { return Array.isArray(user.roles) && user.roles.includes(r); }
+function strip(u) { if (!u) return u; const { password_hash, ...rest } = u; return rest; }
+function signToken(u) {
+  return jwt.sign({ id: u.id, username: u.username, roles: u.roles, full_name: u.full_name },
+    JWT_SECRET, { expiresIn: '12h' });
+}
 function auth(req, res, next) {
   const token = (req.headers['authorization'] || '').split(' ')[1];
   if (!token) return res.status(401).json({ error: 'Authentication required' });
-  jwt.verify(token, JWT_SECRET, (err, user) => {
-    if (err) return res.status(403).json({ error: 'Invalid or expired token' });
-    req.user = user;
-    next();
-  });
-}
-function hasRole(user, role) { return (user.roles || '').split(',').includes(role); }
-function requireRole(role) {
-  return (req, res, next) => hasRole(req.user, role) ? next() : res.status(403).json({ error: 'Insufficient permissions' });
+  try { req.user = jwt.verify(token, JWT_SECRET); next(); }
+  catch (e) { return res.status(401).json({ error: 'Invalid or expired session' }); }
 }
 
+// Report visibility: finance sees all; owners see their own; a manager/finance
+// approver sees reports of people who report to them.
+function reportApprovers(report) {
+  const owner = store.get('users', report.user_id);
+  return owner ? [owner.approver1_id, owner.approver2_id] : [];
+}
+function canReadReport(user, report) {
+  if (role(user, 'finance')) return true;
+  if (report.user_id === user.id) return true;
+  return reportApprovers(report).includes(user.id);
+}
+const canWriteReport = canReadReport; // v1: the same people who can see a report can act on it
+
+// ── Auth endpoints ──
 app.post('/api/login', (req, res) => {
-  const { username, password } = req.body;
-  const user = queryGet('SELECT * FROM users WHERE username = ?', [String(username || '').toLowerCase()]);
-  if (!user || !user.active) return res.status(401).json({ error: 'Invalid credentials' });
-  if (!bcrypt.compareSync(password || '', user.password_hash)) return res.status(401).json({ error: 'Invalid credentials' });
-  const token = jwt.sign({ id: user.id, username: user.username, roles: user.roles, full_name: user.full_name }, JWT_SECRET, { expiresIn: '12h' });
-  res.json({ token, user: { id: user.id, username: user.username, full_name: user.full_name, roles: user.roles.split(','), must_change_password: !!user.must_change_password } });
+  const { username, password } = req.body || {};
+  const u = store.getAll('users').find(x =>
+    String(x.username).toLowerCase() === String(username || '').toLowerCase());
+  if (!u || !u.active) return res.status(401).json({ error: 'Invalid username or password' });
+  if (!bcrypt.compareSync(String(password || ''), u.password_hash))
+    return res.status(401).json({ error: 'Invalid username or password' });
+  res.json({ token: signToken(u), user: strip(u) });
 });
 
-// ── Generic reference-data CRUD (finance only for writes) ──
-const REF = {
-  categories: ['name', 'nominal_code', 'active'],
-  departments: ['name', 'dept_code', 'active'],
-  vehicle_types: ['name', 'active'],
-  mileage_rates: ['name', 'vehicle_type', 'rate_pence', 'afr_pence', 'vat_rate_id', 'effective_from', 'active'],
-  suppliers: ['name', 'active'],
-  vat_rates: ['name', 'percent', 'active'],
-};
-Object.keys(REF).forEach(table => {
-  app.get(`/api/${table}`, auth, (req, res) => res.json(queryAll(`SELECT * FROM ${table}`)));
-  app.post(`/api/${table}`, auth, requireRole('finance'), (req, res) => {
-    const cols = REF[table], id = uuidv4();
-    const vals = cols.map(c => req.body[c] ?? null);
-    runSql(`INSERT INTO ${table} (id,${cols.join(',')}) VALUES (${['?', ...cols.map(() => '?')].join(',')})`, [id, ...vals]);
-    res.json({ id });
+app.get('/api/me', auth, (req, res) => {
+  const u = store.get('users', req.user.id);
+  if (!u || !u.active) return res.status(401).json({ error: 'Account not available' });
+  res.json(strip(u));
+});
+
+app.post('/api/change-password', auth, (req, res) => {
+  const u = store.get('users', req.user.id);
+  if (!u) return res.status(404).json({ error: 'User not found' });
+  const { current, new: next } = req.body || {};
+  if (!bcrypt.compareSync(String(current || ''), u.password_hash))
+    return res.status(400).json({ error: 'Current password is incorrect' });
+  if (String(next || '').length < 6)
+    return res.status(400).json({ error: 'New password must be at least 6 characters' });
+  u.password_hash = bcrypt.hashSync(String(next), 10);
+  u.must_change_password = false;
+  store.put('users', u.id, u);
+  res.json({ ok: true });
+});
+
+// ── Read scoping ──
+function scopedGetAll(user, s) {
+  const all = store.getAll(s);
+  if (s === 'users') return all.map(strip);
+  if (s === 'reports') return all.filter(r => canReadReport(user, r));
+  if (s === 'lines') return all.filter(l => {
+    const rep = store.get('reports', l.report_id);
+    return rep && canReadReport(user, rep);
   });
-  app.put(`/api/${table}/:id`, auth, requireRole('finance'), (req, res) => {
-    const cols = REF[table];
-    runSql(`UPDATE ${table} SET ${cols.map(c => c + '=?').join(',')} WHERE id=?`, [...cols.map(c => req.body[c] ?? null), req.params.id]);
-    res.json({ ok: true });
-  });
+  if (FINANCE_ONLY_READ.includes(s)) return role(user, 'finance') ? all : [];
+  return all; // reference data + settings: any authenticated user
+}
+
+// ── Generic store API (mirrors idbGetAll / idbGet / idbPut / idbDelete / idbByIndex) ──
+app.get('/api/store/:store', auth, (req, res) => {
+  res.json(scopedGetAll(req.user, req.params.store));
 });
 
-// Suppliers: any authenticated user may add (so a new supplier becomes available to all)
-app.post('/api/suppliers/quick', auth, (req, res) => {
-  const id = uuidv4();
-  runSql('INSERT INTO suppliers (id,name,created_by) VALUES (?,?,?)', [id, req.body.name, req.user.id]);
-  res.json({ id });
-});
-
-// ── Users (finance admin) ──
-app.get('/api/users', auth, (req, res) => {
-  res.json(queryAll('SELECT id,username,full_name,email,roles,department_id,approver1_id,approver2_id,active FROM users'));
-});
-app.post('/api/users', auth, requireRole('finance'), (req, res) => {
-  const id = uuidv4();
-  const hash = bcrypt.hashSync(req.body.password || 'changeme', 10);
-  const b = req.body;
-  runSql('INSERT INTO users (id,username,password_hash,full_name,email,roles,department_id,approver1_id,approver2_id,must_change_password) VALUES (?,?,?,?,?,?,?,?,?,1)',
-    [id, b.username.toLowerCase(), hash, b.full_name, b.email || null, (b.roles || []).join(','), b.department_id || null, b.approver1_id || null, b.approver2_id || null]);
-  res.json({ id });
-});
-
-// ── Reports + lines ──
-app.get('/api/reports', auth, (req, res) => {
-  let rows;
-  if (hasRole(req.user, 'finance')) rows = queryAll('SELECT * FROM reports');
-  else rows = queryAll('SELECT * FROM reports WHERE user_id = ?', [req.user.id]);
-  rows.forEach(r => r.lines = queryAll('SELECT * FROM lines WHERE report_id = ?', [r.id]));
+app.get('/api/store/:store/index/:field/:value', auth, (req, res) => {
+  const { store: s, field, value } = req.params;
+  const rows = scopedGetAll(req.user, s).filter(r => String(r[field]) === String(value));
   res.json(rows);
 });
-app.post('/api/reports', auth, (req, res) => {
-  const id = uuidv4();
-  runSql('INSERT INTO reports (id,user_id,type,title,status,notes) VALUES (?,?,?,?,?,?)',
-    [id, req.user.id, req.body.type || 'expense', req.body.title, 'unsubmitted', req.body.notes || null]);
-  res.json({ id });
+
+app.get('/api/store/:store/:key', auth, (req, res) => {
+  const { store: s, key } = req.params;
+  const rec = store.get(s, key);
+  if (!rec) return res.json(null);
+  if (s === 'users') return res.json(strip(rec));
+  if (s === 'reports' && !canReadReport(req.user, rec)) return res.status(403).json({ error: 'Forbidden' });
+  if (s === 'lines') {
+    const rep = store.get('reports', rec.report_id);
+    if (!(rep && canReadReport(req.user, rep))) return res.status(403).json({ error: 'Forbidden' });
+  }
+  if (FINANCE_ONLY_READ.includes(s) && !role(req.user, 'finance')) return res.status(403).json({ error: 'Forbidden' });
+  res.json(rec);
+});
+
+app.put('/api/store/:store', auth, (req, res) => {
+  const s = req.params.store;
+  const obj = req.body || {};
+  const user = req.user;
+
+  // Reference data: any authenticated user may add a supplier; other reference
+  // writes are finance-only.
+  if (REF_STORES.includes(s) && s !== 'suppliers' && !role(user, 'finance'))
+    return res.status(403).json({ error: 'Finance only' });
+  if (s === 'settings' && !role(user, 'finance')) return res.status(403).json({ error: 'Finance only' });
+  if (s === 'payment_runs' && !role(user, 'finance')) return res.status(403).json({ error: 'Finance only' });
+
+  if (s === 'users') {
+    // Turn any provided plaintext password into a bcrypt hash server-side.
+    if (obj.password) { obj.password_hash = bcrypt.hashSync(String(obj.password), 10); }
+    delete obj.password;
+    const existing = obj.id ? store.get('users', obj.id) : null;
+    const isSelf = existing && existing.id === user.id;
+    if (!role(user, 'finance')) {
+      if (!isSelf) return res.status(403).json({ error: 'Forbidden' });
+      // Non-finance users cannot change their own roles or active flag (no privilege escalation)
+      obj.roles = existing.roles;
+      obj.active = existing.active;
+    }
+    if (existing && !obj.password_hash) obj.password_hash = existing.password_hash; // keep current password on edits
+    if (!obj.id) obj.id = uuidv4();
+    if (!obj.password_hash) obj.password_hash = bcrypt.hashSync('changeme', 10);
+  }
+
+  if (s === 'reports') {
+    const existing = obj.id ? store.get('reports', obj.id) : null;
+    if (existing) {
+      if (!canWriteReport(user, existing)) return res.status(403).json({ error: 'Forbidden' });
+      obj.user_id = existing.user_id;                        // ownership is fixed once set
+      if (existing.created_at) obj.created_at = existing.created_at;
+    } else if (!role(user, 'finance')) {
+      obj.user_id = user.id;                                 // new reports are owned by their creator
+    }
+    if (!obj.id) obj.id = uuidv4();
+  }
+
+  if (s === 'lines') {
+    const rep = store.get('reports', obj.report_id);
+    if (!rep || !canWriteReport(user, rep)) return res.status(403).json({ error: 'Forbidden' });
+    if (!obj.id) obj.id = uuidv4();
+  }
+
+  if (s === 'audit_log') {
+    if (obj.id === undefined || obj.id === null) obj.id = store.nextCounter('audit_log');
+  }
+
+  const kf = keyField(s);
+  if (obj[kf] === undefined || obj[kf] === null) obj[kf] = uuidv4();
+  const key = obj[kf];
+  store.put(s, key, obj);
+  res.json({ key, id: obj.id, [kf]: obj[kf] });
+});
+
+app.delete('/api/store/:store/:key', auth, (req, res) => {
+  const { store: s, key } = req.params;
+  const user = req.user;
+  if (s === 'reports') {
+    const rep = store.get('reports', key);
+    if (rep && !canWriteReport(user, rep)) return res.status(403).json({ error: 'Forbidden' });
+  }
+  if (s === 'lines') {
+    const l = store.get('lines', key);
+    if (l) { const rep = store.get('reports', l.report_id); if (rep && !canWriteReport(user, rep)) return res.status(403).json({ error: 'Forbidden' }); }
+  }
+  if (REF_STORES.includes(s) && s !== 'suppliers' && !role(user, 'finance')) return res.status(403).json({ error: 'Finance only' });
+  if ((s === 'payment_runs' || s === 'settings') && !role(user, 'finance')) return res.status(403).json({ error: 'Finance only' });
+  store.del(s, key);
+  res.json({ ok: true });
 });
 
 app.get('/', (req, res) => res.sendFile(path.join(__dirname, 'public', 'index.html')));
 
-initDb().then(() => {
+store.initDb().then(() => {
   app.listen(PORT, () => console.log(`Komfort Expenses System running on http://localhost:${PORT}`));
 }).catch(err => { console.error('Failed to start:', err); process.exit(1); });
