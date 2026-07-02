@@ -8,7 +8,9 @@ const path = require('path');
 const bcrypt = require('bcryptjs');
 const jwt = require('jsonwebtoken');
 const { v4: uuidv4 } = require('uuid');
+const crypto = require('crypto');
 const store = require('./database');
+const mailer = require('./mailer');
 
 const app = express();
 const PORT = process.env.PORT || 3000;
@@ -49,6 +51,51 @@ function canReadReport(user, report) {
   return reportApprovers(report).includes(user.id);
 }
 const canWriteReport = canReadReport; // v1: the same people who can see a report can act on it
+
+// Stores that must never be exposed through the generic /api/store API.
+const INTERNAL_STORES = ['reset_tokens'];
+
+// ── Expense email notifications ──
+const fmtDate = d => d ? new Date(d).toLocaleDateString('en-GB') : '—';
+function reportTotal(reportId) {
+  return store.getAll('lines')
+    .filter(l => l.report_id === reportId)
+    .reduce((sum, l) => sum + Number(l.amount || 0), 0);
+}
+function notifyReport(report, stage) {
+  try {
+    if (report.type !== 'expense') return; // expenses only, not credit card
+    const owner = store.get('users', report.user_id);
+    if (!owner) return;
+    const approver1 = owner.approver1_id ? store.get('users', owner.approver1_id) : null;
+    const approver2 = owner.approver2_id ? store.get('users', owner.approver2_id) : null;
+    const money = '£' + reportTotal(report.id).toFixed(2);
+    const ref = report.reference || report.title || report.id;
+    const rows = [
+      ['Employee', owner.full_name],
+      ['Reference', ref],
+      ['Amount', money],
+      ['Submitted', fmtDate(report.submitted_at)],
+      ['Manager approved', fmtDate(report.manager_approved_at)],
+      ['Finance approved', fmtDate(report.finance_approved_at)],
+      ['Reimbursed', fmtDate(report.reimbursed_at)],
+    ];
+    const table = '<table style="border-collapse:collapse;margin:8px 0">' +
+      rows.map(([k, v]) => `<tr><td style="padding:3px 14px 3px 0;color:#666">${k}</td><td style="padding:3px 0"><strong>${v}</strong></td></tr>`).join('') +
+      '</table>';
+    let subject, intro, extra = null;
+    if (stage === 'submitted') { subject = `Expense ${ref} submitted — ${owner.full_name}`; intro = `${owner.full_name} has submitted expense claim <strong>${ref}</strong> for <strong>${money}</strong>, awaiting approval.`; extra = (approver1 || approver2 || {}).email; }
+    else if (stage === 'manager_approved') { subject = `Expense ${ref} approved by manager`; intro = `Expense claim <strong>${ref}</strong> (${money}) has been approved by the manager and is awaiting finance approval.`; extra = (approver2 || {}).email; }
+    else if (stage === 'finance_approved') { subject = `Expense ${ref} approved by finance`; intro = `Expense claim <strong>${ref}</strong> (${money}) has been approved by finance and is due for reimbursement.`; extra = (approver2 || {}).email; }
+    else if (stage === 'reimbursed') { subject = `Expense ${ref} reimbursed`; intro = `Expense claim <strong>${ref}</strong> (${money}) has been reimbursed.`; }
+    else return;
+    const html = `<div style="font-family:Segoe UI,Arial,sans-serif;font-size:14px;color:#222">
+      <p>${intro}</p>${table}
+      <p style="margin-top:16px"><a href="${mailer.APP_URL}" style="background:#565A5C;color:#fff;padding:9px 18px;border-radius:6px;text-decoration:none">Open the Expenses System</a></p>
+      <p style="color:#999;font-size:12px">Komfort Partitioning Ltd — Expenses System</p></div>`;
+    mailer.sendMail([owner.email, extra], subject, html);
+  } catch (e) { console.warn('notifyReport failed:', e.message); }
+}
 
 // ── Auth endpoints ──
 app.post('/api/login', (req, res) => {
@@ -96,6 +143,49 @@ app.post('/api/backup/run', auth, (req, res) => {
   res.json({ ok: true });
 });
 
+// ── Forgot / reset password (no auth; emails a time-limited link) ──
+app.post('/api/forgot-password', (req, res) => {
+  const id = String((req.body || {}).username_or_email || '').toLowerCase().trim();
+  if (id) {
+    const user = store.getAll('users').find(u =>
+      String(u.username).toLowerCase() === id || String(u.email || '').toLowerCase() === id);
+    if (user && user.active && user.email) {
+      const token = crypto.randomBytes(24).toString('hex');
+      store.put('reset_tokens', token, { token, user_id: user.id, expires: Date.now() + 60 * 60 * 1000 });
+      const link = mailer.APP_URL + '/?reset=' + token;
+      mailer.sendMail(user.email, 'Reset your Komfort Expenses password',
+        `<div style="font-family:Segoe UI,Arial,sans-serif;font-size:14px;color:#222">
+          <p>Hello ${user.full_name},</p>
+          <p>We received a request to reset your Komfort Expenses System password. Click below to choose a new one (valid for 1 hour):</p>
+          <p><a href="${link}" style="background:#565A5C;color:#fff;padding:9px 18px;border-radius:6px;text-decoration:none">Reset password</a></p>
+          <p style="color:#999;font-size:12px">If you didn't request this, you can safely ignore this email.</p></div>`);
+    }
+  }
+  // Always respond the same way, so we never reveal whether an account exists.
+  res.json({ ok: true });
+});
+
+app.post('/api/reset-password', (req, res) => {
+  const { token, new: next } = req.body || {};
+  const rec = token ? store.get('reset_tokens', token) : null;
+  if (!rec || rec.expires < Date.now()) return res.status(400).json({ error: 'This reset link is invalid or has expired.' });
+  if (String(next || '').length < 6) return res.status(400).json({ error: 'New password must be at least 6 characters' });
+  const user = store.get('users', rec.user_id);
+  if (!user) return res.status(400).json({ error: 'Account not found' });
+  user.password_hash = bcrypt.hashSync(String(next), 10);
+  user.must_change_password = false;
+  store.put('users', user.id, user);
+  store.del('reset_tokens', token);
+  res.json({ ok: true });
+});
+
+// Never expose internal stores (e.g. reset tokens) through the generic API.
+app.use('/api/store', (req, res, next) => {
+  const s = req.path.split('/').filter(Boolean)[0];
+  if (INTERNAL_STORES.includes(s)) return res.status(404).json({ error: 'Not found' });
+  next();
+});
+
 // ── Read scoping ──
 function scopedGetAll(user, s) {
   const all = store.getAll(s);
@@ -138,6 +228,7 @@ app.put('/api/store/:store', auth, (req, res) => {
   const s = req.params.store;
   const obj = req.body || {};
   const user = req.user;
+  let prevReport = null;
 
   // Reference data: any authenticated user may add a supplier; other reference
   // writes are finance-only.
@@ -165,6 +256,7 @@ app.put('/api/store/:store', auth, (req, res) => {
 
   if (s === 'reports') {
     const existing = obj.id ? store.get('reports', obj.id) : null;
+    prevReport = existing;
     if (existing) {
       if (!canWriteReport(user, existing)) return res.status(403).json({ error: 'Forbidden' });
       obj.user_id = existing.user_id;                        // ownership is fixed once set
@@ -189,6 +281,13 @@ app.put('/api/store/:store', auth, (req, res) => {
   if (obj[kf] === undefined || obj[kf] === null) obj[kf] = uuidv4();
   const key = obj[kf];
   store.put(s, key, obj);
+  if (s === 'reports') {
+    const was = prevReport || {};
+    if (!was.submitted_at && obj.submitted_at) notifyReport(obj, 'submitted');
+    else if (!was.manager_approved_at && obj.manager_approved_at) notifyReport(obj, 'manager_approved');
+    else if (!was.finance_approved_at && obj.finance_approved_at) notifyReport(obj, 'finance_approved');
+    else if (!was.reimbursed_at && obj.reimbursed_at) notifyReport(obj, 'reimbursed');
+  }
   res.json({ key, id: obj.id, [kf]: obj[kf] });
 });
 
