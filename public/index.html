@@ -203,13 +203,6 @@
       </div>
       <button class="btn btn-primary" style="width:100%" type="submit">Sign in</button>
     </form>
-    <div class="login-hint">
-      <strong>Demo accounts</strong><br>
-      Finance (all roles) — <code>finance</code> / <code>admin123</code><br>
-      Manager — <code>manager</code> / <code>manager123</code><br>
-      Employee — <code>employee</code> / <code>employee123</code><br>
-      Credit-card user — <code>ccuser</code> / <code>ccuser123</code>
-    </div>
   </div>
 </div>
 
@@ -251,31 +244,26 @@
 const DB_NAME = 'KomfortExpenses';
 const DB_VERSION = 4;
 const STORES = ['users','categories','departments','locations','vehicle_types','mileage_rates','advisory_rates','mileage_adjustments','suppliers','vat_rates','reports','lines','payment_runs','settings','audit_log'];
-let db = null;
-
-function openDB(){
-  return new Promise((resolve,reject)=>{
-    const req = indexedDB.open(DB_NAME, DB_VERSION);
-    req.onupgradeneeded = e => {
-      const d = e.target.result;
-      const simple = ['categories','departments','locations','vehicle_types','mileage_rates','advisory_rates','mileage_adjustments','suppliers','vat_rates','payment_runs'];
-      simple.forEach(s => { if(!d.objectStoreNames.contains(s)) d.createObjectStore(s,{keyPath:'id'}); });
-      if(!d.objectStoreNames.contains('users')){ const s=d.createObjectStore('users',{keyPath:'id'}); s.createIndex('username','username',{unique:true}); }
-      if(!d.objectStoreNames.contains('reports')){ const s=d.createObjectStore('reports',{keyPath:'id'}); s.createIndex('user_id','user_id'); s.createIndex('status','status'); }
-      if(!d.objectStoreNames.contains('lines')){ const s=d.createObjectStore('lines',{keyPath:'id'}); s.createIndex('report_id','report_id'); }
-      if(!d.objectStoreNames.contains('settings')) d.createObjectStore('settings',{keyPath:'key'});
-      if(!d.objectStoreNames.contains('audit_log')){ const s=d.createObjectStore('audit_log',{keyPath:'id',autoIncrement:true}); s.createIndex('timestamp','timestamp'); }
-    };
-    req.onsuccess = e => { db = e.target.result; resolve(db); };
-    req.onerror = e => reject(e.target.error);
-  });
+// The app now talks to the shared server API instead of local IndexedDB, so all
+// users see the same data. A JWT obtained at login is stored and sent with every
+// request; the five helpers below keep the exact signatures the rest of the app uses.
+let AUTH_TOKEN = localStorage.getItem('exp_token') || null;
+async function apiFetch(method, url, body){
+  const opts = { method, headers: {} };
+  if (AUTH_TOKEN) opts.headers['Authorization'] = 'Bearer ' + AUTH_TOKEN;
+  if (body !== undefined){ opts.headers['Content-Type'] = 'application/json'; opts.body = JSON.stringify(body); }
+  const r = await fetch(url, opts);
+  if (r.status === 401){ AUTH_TOKEN = null; localStorage.removeItem('exp_token'); if (state.user){ location.reload(); } throw new Error('Session expired'); }
+  if (!r.ok){ let msg; try { msg = (await r.json()).error; } catch(e){} throw new Error(msg || ('Request failed ('+r.status+')')); }
+  const text = await r.text();
+  return text ? JSON.parse(text) : null;
 }
-const tx = (s,m='readonly') => db.transaction(s,m).objectStore(s);
-function idbGetAll(s){ return new Promise((res,rej)=>{ const r=tx(s).getAll(); r.onsuccess=()=>res(r.result); r.onerror=e=>rej(e.target.error); }); }
-function idbGet(s,k){ return new Promise((res,rej)=>{ const r=tx(s).get(k); r.onsuccess=()=>res(r.result); r.onerror=e=>rej(e.target.error); }); }
-function idbPut(s,v){ return new Promise((res,rej)=>{ const r=tx(s,'readwrite').put(v); r.onsuccess=()=>res(r.result); r.onerror=e=>rej(e.target.error); }); }
-function idbDelete(s,k){ return new Promise((res,rej)=>{ const r=tx(s,'readwrite').delete(k); r.onsuccess=()=>res(); r.onerror=e=>rej(e.target.error); }); }
-function idbByIndex(s,idx,val){ return new Promise((res,rej)=>{ const r=tx(s).index(idx).getAll(val); r.onsuccess=()=>res(r.result); r.onerror=e=>rej(e.target.error); }); }
+const _enc = encodeURIComponent;
+function idbGetAll(s){ return apiFetch('GET', '/api/store/'+_enc(s)); }
+function idbGet(s,k){ return apiFetch('GET', '/api/store/'+_enc(s)+'/'+_enc(k)); }
+function idbPut(s,v){ return apiFetch('PUT', '/api/store/'+_enc(s), v).then(r => r && r.key); }
+function idbDelete(s,k){ return apiFetch('DELETE', '/api/store/'+_enc(s)+'/'+_enc(k)); }
+function idbByIndex(s,idx,val){ return apiFetch('GET', '/api/store/'+_enc(s)+'/index/'+_enc(idx)+'/'+_enc(val)); }
 
 function uuid(){ return crypto.randomUUID ? crypto.randomUUID() : 'xxxxxxxx-xxxx-4xxx'.replace(/x/g,()=>Math.floor(Math.random()*16).toString(16)); }
 function nowISO(){ return new Date().toISOString(); }
@@ -334,8 +322,10 @@ function optionList(opts, current, useEmpty){
 // SEED DATA
 // ═══════════════════════════════════════════════
 async function seedDefaults(){
-  const users = await idbGetAll('users');
-  if (users.length > 0) return;
+  // Seed shared reference data once (guarded by whether any VAT rates exist).
+  // The admin user is created server-side, so this no longer keys on users.
+  const existingVats = await idbGetAll('vat_rates');
+  if (existingVats.length > 0) return;
   await setSetting('company_name', COMPANY);
 
   const mk = (arr, store, fields) => arr.map(a=>{ const o={id:uuid(),active:1}; fields.forEach((f,i)=>o[f]=a[i]); return o; });
@@ -357,45 +347,7 @@ async function seedDefaults(){
   const sups = ['Shell','BP','Esso','Premier Inn','Travelodge','Greggs','Costa Coffee','Screwfix','Toolstation','National Rail'];
   for (const s of sups) await idbPut('suppliers',{ id:uuid(), name:s, active:1, created_by:'system', created_at:nowISO() });
 
-  // Users with role combinations + approval chain
-  const financeId = uuid(), managerId = uuid(), empId = uuid(), ccId = uuid();
-  const u = async (id,username,pwd,full,email,roles,dept,loc,a1,a2)=> idbPut('users',{
-    id, username, password_hash: await sha256(pwd), full_name:full, email,
-    roles, department_id:dept, location_id:loc, approver1_id:a1||null, approver2_id:a2||null,
-    active:1, must_change_password:false, created_at:nowISO()
-  });
-  const finDept     = depts.find(d=>d.name==='Finance').id;
-  const indirectDept= depts.find(d=>d.name==='Indirect').id;
-  const directDept  = depts.find(d=>d.name==='Direct Labour').id;
-  const salesDept   = depts.find(d=>d.name==='Sales').id;
-  const locLeeds    = locs.find(l=>l.name==='Leeds').id;
-  const locAx10     = locs.find(l=>l.name==='Axcess-10').id;
-  const locCrawley  = locs.find(l=>l.name==='Crawley').id;
-  await u(financeId,'finance','admin123','Helen Foster','h.foster@komfort.com',['employee','manager','finance','credit_card'],finDept,locLeeds,null,null);
-  await u(managerId,'manager','manager123','Sarah Mitchell','s.mitchell@komfort.com',['employee','manager','credit_card'],indirectDept,locLeeds,null,financeId);
-  await u(empId,'employee','employee123','James Okafor','j.okafor@komfort.com',['employee'],directDept,locAx10,managerId,financeId);
-  await u(ccId,'ccuser','ccuser123','Priya Sharma','p.sharma@komfort.com',['credit_card'],salesDept,locCrawley,managerId,financeId);
-
-  // Sample report with one expense + one mileage line (unsubmitted, owned by employee)
-  const rptId = uuid();
-  await idbPut('reports',{ id:rptId, user_id:empId, type:'expense', title:'May Expenses', status:'unsubmitted',
-    submitted_at:null, manager_approved_by:null, manager_approved_at:null, finance_approved_by:null, finance_approved_at:null,
-    reimbursed_at:null, payment_run_id:null, rejected_by:null, rejected_at:null, rejection_note:null, notes:'', created_at:nowISO() });
-  const travelCat = cats.find(c=>c.name==='Subsistence').id;
-  const shell = (await idbGetAll('suppliers')).find(s=>s.name==='Greggs').id;
-  await idbPut('lines',{ id:uuid(), report_id:rptId, line_type:'expense', line_date:today(), description:'Lunch on site visit',
-    supplier_id:shell, category_id:travelCat, amount:8.40, vat_rate_id:vats[2].id, vat_amount:0,
-    postcode_from:'', postcode_to:'', distance_miles:0, vehicle_type:'', vehicle_reg:'', mileage_rate_id:'', receipts:[], created_at:nowISO() });
-  const sampleCat = 'Car - Petrol - up to 1400cc';
-  const sampleRate = await findApplicableRate(sampleCat, today());
-  const adv = Number(sampleRate?.afr_pence||12);
-  await idbPut('lines',{ id:uuid(), report_id:rptId, line_type:'mileage', line_date:today(), description:'Leeds office to Crawley site',
-    supplier_id:'', category_id:'', amount:+(48*0.45).toFixed(2), vat_rate_id:'', vat_amount:+(48*adv/100*(20/120)).toFixed(2),
-    postcode_from:'LS10 1AB', postcode_to:'RH10 8GH', distance_miles:48, vehicle_type:sampleCat, vehicle_reg:'YK19 ABC',
-    mileage_rate_id:sampleRate?.id||'', company_car:false, rate_up:45, rate_over:25, rate_adv:adv, miles_under:48, miles_over:0,
-    receipts:[], created_at:nowISO() });
-
-  await logAction('seed',{ detail:'Initial demo data created' });
+  await logAction('seed',{ detail:'Reference data initialised' });
 }
 
 // HMRC mileage rate categories + rates (effective 1 Mar 2026). Each category has:
@@ -527,16 +479,15 @@ function isEmployee(){ return hasRole('employee'); }
 
 async function handleLogin(e){
   e.preventDefault();
-  const u = document.getElementById('login-username').value.trim().toLowerCase();
+  const u = document.getElementById('login-username').value.trim();
   const p = document.getElementById('login-password').value;
-  const all = await idbGetAll('users');
-  const user = all.find(x => x.username.toLowerCase() === u);
-  if (!user || !user.active){ toast('Invalid username or password','error'); return; }
-  const hash = await sha256(p);
-  if (hash !== user.password_hash){ toast('Invalid username or password','error'); return; }
-  state.user = user;
-  sessionStorage.setItem('exp_session', user.id);
-  await logAction('login');
+  let res;
+  try { res = await apiFetch('POST', '/api/login', { username: u, password: p }); }
+  catch(err){ toast('Invalid username or password','error'); return; }
+  AUTH_TOKEN = res.token; localStorage.setItem('exp_token', res.token);
+  state.user = res.user;
+  try { await logAction('login'); } catch(e){}
+  await runAdminSetup();
   await enterApp();
 }
 async function enterApp(){
@@ -553,7 +504,8 @@ async function enterApp(){
   if (state.user.must_change_password) changePassword(true);
 }
 function logout(){
-  state.user = null; sessionStorage.removeItem('exp_session');
+  state.user = null; AUTH_TOKEN = null;
+  localStorage.removeItem('exp_token');
   document.getElementById('app').classList.remove('active');
   document.getElementById('login-view').style.display = 'flex';
   document.getElementById('login-form').reset();
@@ -574,13 +526,10 @@ async function saveChangePassword(){
   if(!cur || !np || !conf){ toast('All fields are required','error'); return; }
   if(np.length < 6){ toast('New password must be at least 6 characters','error'); return; }
   if(np !== conf){ toast('New passwords do not match','error'); return; }
-  const fresh = await idbGet('users', state.user.id);
-  if(await sha256(cur) !== fresh.password_hash){ toast('Current password is incorrect','error'); return; }
-  if(await sha256(np) === fresh.password_hash){ toast('New password must be different from the current one','error'); return; }
-  fresh.password_hash = await sha256(np); fresh.must_change_password = false;
-  await idbPut('users', fresh);
-  state.user = fresh;
-  await logAction('password_changed');
+  try { await apiFetch('POST', '/api/change-password', { current: cur, new: np }); }
+  catch(err){ toast(err.message || 'Could not change password','error'); return; }
+  state.user.must_change_password = false;
+  try { await logAction('password_changed'); } catch(e){}
   closeModal(); toast('Password updated');
 }
 async function refreshCaches(){
@@ -3062,14 +3011,16 @@ async function saveUser(id){
   rec.approver1_id=val('u-app1')||null; rec.approver2_id=val('u-app2')||null;
   rec.active = id ? (document.getElementById('u-active')?.checked?1:0) : 1;
   const pwd = val('u-pwd');
-  if (pwd) rec.password_hash = await sha256(pwd);
-  else if (!id) rec.password_hash = await sha256('changeme');
+  if (pwd) rec.password = pwd;                 // server hashes it (bcrypt)
+  else if (!id) rec.password = 'changeme';     // default for a brand-new user
+  if (!id) rec.must_change_password = true;    // force new users to set their own password
+  delete rec.password_hash;                    // never send a client-side hash
   await idbPut('users', rec); await refreshCaches(); closeModal(); navigate('adm-users');
   toast(id?'User updated':'User created');
 }
 async function resetPwd(id){
   const np = prompt('Enter a new password for this user:'); if(!np) return;
-  const u = await idbGet('users', id); u.password_hash = await sha256(np); u.must_change_password=true; await idbPut('users', u);
+  const u = await idbGet('users', id); u.password = np; u.must_change_password=true; delete u.password_hash; await idbPut('users', u);
   toast('Password reset');
 }
 
@@ -3106,18 +3057,29 @@ function setupReceiptHoverPreview(){
 // ═══════════════════════════════════════════════
 // INIT
 // ═══════════════════════════════════════════════
-(async function init(){
+// Reference-data seed + data migrations are admin operations, so they run only
+// for a logged-in finance user. Their internal guards make them safe to call on
+// every finance login (they no-op once already applied to the shared database).
+async function runAdminSetup(){
+  if (!hasRole('finance')) return;
   try {
-    await openDB();
     await seedDefaults();
     await ensureMileageModelV3();
     await ensureLocations();
     await migrateListsV2();
     await migrateDemoCcuserRoles();
     await backfillReportRefs();
+  } catch(err){ console.warn('Admin setup step skipped:', err.message); }
+}
+
+(async function init(){
+  try {
     setupReceiptHoverPreview();
-    const sid = sessionStorage.getItem('exp_session');
-    if (sid){ const u = await idbGet('users', sid); if (u && u.active){ state.user = u; await enterApp(); } }
+    if (AUTH_TOKEN){
+      let me = null;
+      try { me = await apiFetch('GET', '/api/me'); } catch(e){ me = null; }
+      if (me && me.active){ state.user = me; await runAdminSetup(); await enterApp(); }
+    }
   } catch(err){ console.error('Init failed', err); toast('Failed to start: '+err.message,'error'); }
 })();
 </script>
