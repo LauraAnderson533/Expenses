@@ -40,8 +40,34 @@ async function initDb() {
   db.run(`CREATE TABLE IF NOT EXISTS counters (name TEXT PRIMARY KEY, value INTEGER NOT NULL)`);
   seedBootstrapAdmin();
   save();
+  backupDb();          // take a snapshot on every startup
   return db;
 }
+
+// ── Automatic backups ──
+// Keep a rolling set of dated snapshots of the database file on the persistent
+// disk, so data can be recovered after an accidental bad edit or deletion.
+// A new snapshot is taken on startup and once every 24h; the newest BACKUP_KEEP
+// are retained. For off-site/disaster recovery, download a copy periodically via
+// the finance-only /api/backup endpoint.
+const BACKUP_DIR = path.join(DATA_DIR, 'backups');
+const BACKUP_KEEP = 14;
+function backupDb() {
+  try {
+    if (!db) return;
+    save();
+    if (!fs.existsSync(BACKUP_DIR)) fs.mkdirSync(BACKUP_DIR, { recursive: true });
+    const stamp = new Date().toISOString().slice(0, 10);
+    fs.copyFileSync(DB_PATH, path.join(BACKUP_DIR, `expenses-${stamp}.db`));
+    const files = fs.readdirSync(BACKUP_DIR)
+      .filter(f => /^expenses-\d{4}-\d{2}-\d{2}\.db$/.test(f)).sort();
+    while (files.length > BACKUP_KEEP) {
+      try { fs.unlinkSync(path.join(BACKUP_DIR, files.shift())); } catch (e) {}
+    }
+    console.log('DB backup written for', stamp, '(' + files.length + ' kept)');
+  } catch (e) { console.warn('Backup failed:', e.message); }
+}
+setInterval(backupDb, 24 * 60 * 60 * 1000);
 
 // ── Generic record access ──
 function getAll(store) {
@@ -113,4 +139,4 @@ function seedBootstrapAdmin() {
   console.log('──────────────────────────────────────────────');
 }
 
-module.exports = { initDb, getAll, get, put, del, nextCounter, save };
+module.exports = { initDb, getAll, get, put, del, nextCounter, save, backupDb, DB_PATH, BACKUP_DIR };

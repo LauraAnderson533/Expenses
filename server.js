@@ -81,6 +81,21 @@ app.post('/api/change-password', auth, (req, res) => {
   res.json({ ok: true });
 });
 
+// Download a fresh copy of the whole database (finance only) for off-site backup.
+app.get('/api/backup', auth, (req, res) => {
+  if (!role(req.user, 'finance')) return res.status(403).json({ error: 'Finance only' });
+  store.save();
+  const name = 'komfort-expenses-backup-' + new Date().toISOString().slice(0, 10) + '.db';
+  res.download(store.DB_PATH, name);
+});
+
+// Trigger an immediate on-disk snapshot (finance only).
+app.post('/api/backup/run', auth, (req, res) => {
+  if (!role(req.user, 'finance')) return res.status(403).json({ error: 'Finance only' });
+  store.backupDb();
+  res.json({ ok: true });
+});
+
 // ── Read scoping ──
 function scopedGetAll(user, s) {
   const all = store.getAll(s);
