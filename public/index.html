@@ -1039,8 +1039,9 @@ function newReport(type){
 async function saveNewReport(type){
   const title = val('nr-title'); if(!title){ toast('Enter a report name','error'); return; }
   const id = uuid();
-  const reference = await nextReportReference(type);
-  await idbPut('reports',{ id, reference, user_id:state.user.id, type, title, status:'unsubmitted',
+  // The sequential reference (KPLEXP-… / KPLCC-…) is assigned by the server on
+  // create, so regular employees don't need settings-write permission.
+  await idbPut('reports',{ id, user_id:state.user.id, type, title, status:'unsubmitted',
     submitted_at:null, manager_approved_by:null, manager_approved_at:null, finance_approved_by:null, finance_approved_at:null,
     reimbursed_at:null, payment_run_id:null, rejected_by:null, rejected_at:null, rejection_note:null, notes:val('nr-notes'), created_at:nowISO() });
   await logAction('report_created',{ report_id:id, reference });
