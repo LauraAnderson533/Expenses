@@ -261,8 +261,14 @@ app.put('/api/store/:store', auth, (req, res) => {
       if (!canWriteReport(user, existing)) return res.status(403).json({ error: 'Forbidden' });
       obj.user_id = existing.user_id;                        // ownership is fixed once set
       if (existing.created_at) obj.created_at = existing.created_at;
-    } else if (!role(user, 'finance')) {
-      obj.user_id = user.id;                                 // new reports are owned by their creator
+      if (existing.reference) obj.reference = existing.reference;   // keep the assigned reference
+    } else {
+      if (!role(user, 'finance')) obj.user_id = user.id;     // new reports are owned by their creator
+      if (!obj.reference) {                                  // assign a sequential reference server-side
+        const cc = obj.type === 'creditcard';
+        const n = store.nextCounter(cc ? 'seq_creditcard' : 'seq_expense');
+        obj.reference = `${cc ? 'KPLCC' : 'KPLEXP'}-${String(n).padStart(6, '0')}`;
+      }
     }
     if (!obj.id) obj.id = uuidv4();
   }
