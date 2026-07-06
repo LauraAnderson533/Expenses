@@ -143,6 +143,21 @@ app.post('/api/backup/run', auth, (req, res) => {
   res.json({ ok: true });
 });
 
+// Email diagnostic — sends a test email and returns the exact result (so we can
+// see Graph/SMTP errors). Allowed for a logged-in finance user, or via a secret
+// ?key=<MAIL_TEST_KEY> query (env-set) so it can be checked without logging in.
+app.get('/api/test-email', async (req, res) => {
+  let allowed = false;
+  const testKey = process.env.MAIL_TEST_KEY;
+  if (testKey && req.query.key === testKey) allowed = true;
+  else { try { allowed = role(jwt.verify((req.headers['authorization'] || '').split(' ')[1], JWT_SECRET), 'finance'); } catch (e) {} }
+  if (!allowed) return res.status(403).json({ error: 'Forbidden' });
+  const to = req.query.to || mailer.mailStatus().sender;
+  const result = await mailer.sendResult(to, 'Komfort Expenses — test email',
+    '<p>This is a test email from the Komfort Expenses System.</p><p>If you received this, Microsoft Graph email is working.</p>');
+  res.json({ config: mailer.mailStatus(), to, result });
+});
+
 // ── Forgot / reset password (no auth; emails a time-limited link) ──
 app.post('/api/forgot-password', (req, res) => {
   const id = String((req.body || {}).username_or_email || '').toLowerCase().trim();

@@ -100,4 +100,28 @@ async function sendMail(to, subject, html) {
   }
 }
 
-module.exports = { sendMail, APP_URL, mailEnabled };
+// Current email configuration (no secrets), for diagnostics.
+function mailStatus() {
+  return {
+    enabled: mailEnabled,
+    mode: graphEnabled ? 'graph' : (smtpEnabled ? 'smtp' : 'none'),
+    sender: GRAPH_SENDER || MAIL_FROM || null,
+  };
+}
+
+// Like sendMail, but returns the outcome instead of swallowing errors — used by
+// the /api/test-email diagnostic so we can see the exact Graph/SMTP response.
+async function sendResult(to, subject, html) {
+  const list = [...new Set((Array.isArray(to) ? to : [to]).filter(Boolean))];
+  if (!list.length) return { ok: false, error: 'no recipients' };
+  if (!mailEnabled) return { ok: false, error: 'email not configured' };
+  try {
+    if (graphEnabled) await sendViaGraph(list, subject, html);
+    else await smtpTransport.sendMail({ from: MAIL_FROM, to: list.join(','), subject, html });
+    return { ok: true, mode: graphEnabled ? 'graph' : 'smtp', to: list };
+  } catch (e) {
+    return { ok: false, error: e.message, mode: graphEnabled ? 'graph' : 'smtp' };
+  }
+}
+
+module.exports = { sendMail, sendResult, mailStatus, APP_URL, mailEnabled };
