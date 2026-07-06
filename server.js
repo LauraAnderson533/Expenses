@@ -88,6 +88,7 @@ function notifyReport(report, stage) {
     else if (stage === 'manager_approved') { subject = `Expense ${ref} approved by manager`; intro = `Expense claim <strong>${ref}</strong> (${money}) has been approved by the manager and is awaiting finance approval.`; extra = (approver2 || {}).email; }
     else if (stage === 'finance_approved') { subject = `Expense ${ref} approved by finance`; intro = `Expense claim <strong>${ref}</strong> (${money}) has been approved by finance and is due for reimbursement.`; extra = (approver2 || {}).email; }
     else if (stage === 'reimbursed') { subject = `Expense ${ref} reimbursed`; intro = `Expense claim <strong>${ref}</strong> (${money}) has been reimbursed.`; }
+    else if (stage === 'rejected') { subject = `Expense ${ref} returned for changes`; intro = `Your expense claim <strong>${ref}</strong> (${money}) has been <strong>returned for changes</strong>.` + (report.rejection_note ? ` Reason: <em>${String(report.rejection_note).replace(/</g, '&lt;')}</em>` : ' Please amend it and resubmit.'); }
     else return;
     const html = `<div style="font-family:Segoe UI,Arial,sans-serif;font-size:14px;color:#222">
       <p>${intro}</p>${table}
@@ -304,7 +305,9 @@ app.put('/api/store/:store', auth, (req, res) => {
   store.put(s, key, obj);
   if (s === 'reports') {
     const was = prevReport || {};
-    if (!was.submitted_at && obj.submitted_at) notifyReport(obj, 'submitted');
+    const awaiting = st => st === 'awaiting_manager' || st === 'awaiting_finance';
+    if (obj.status === 'rejected' && was.status !== 'rejected') notifyReport(obj, 'rejected');
+    else if (awaiting(obj.status) && !awaiting(was.status)) notifyReport(obj, 'submitted'); // first submit or resubmit
     else if (!was.manager_approved_at && obj.manager_approved_at) notifyReport(obj, 'manager_approved');
     else if (!was.finance_approved_at && obj.finance_approved_at) notifyReport(obj, 'finance_approved');
     else if (!was.reimbursed_at && obj.reimbursed_at) notifyReport(obj, 'reimbursed');
