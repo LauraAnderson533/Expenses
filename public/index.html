@@ -1848,6 +1848,7 @@ async function printableReport(reportId){
   <div class="ref"><span class="badge">${esc(r.reference||'—')}</span>${r.type==='creditcard'?'Credit Card Report':'Expense Report'}</div>
 
   <div class="meta">
+    ${r.type!=='creditcard'?`<div class="row"><dt>Account no (E8)</dt><dd>${esc(state.usersById[r.user_id]?.account_number||'—')}</dd></div>`:''}
     <div class="row"><dt>Submitted by</dt><dd>${esc(userName(r.user_id))}</dd></div>
     <div class="row"><dt>Department</dt><dd>${esc(dept?.name||'—')}${dept?.dept_code?' ('+esc(dept.dept_code)+')':''}</dd></div>
     <div class="row"><dt>Location</dt><dd>${esc(loc?.name||'—')}</dd></div>
@@ -3006,6 +3007,7 @@ async function editUser(id){
       <div class="form-group"><label class="req">Username</label><input id="u-username" value="${esc(rec.username||'')}" ${id?'readonly':''}></div></div>
     <div class="form-row"><div class="form-group"><label>Email</label><input id="u-email" value="${esc(rec.email||'')}"></div>
       <div class="form-group"><label>${id?'New password (leave blank to keep)':'Password'}</label><input id="u-pwd" type="text" placeholder="${id?'unchanged':'set a password'}"></div></div>
+    <div class="form-group"><label>Account number (E8)</label><input id="u-account" value="${esc(rec.account_number||'')}"><div class="small muted">Supplier account number in E8 &mdash; shown near the top of this person&#39;s printed expense reports.</div></div>
     <div class="form-group"><label>Roles</label><div class="form-row" style="grid-template-columns:1fr 1fr">
       ${ROLES.map(r=>`<label class="chk"><input type="checkbox" class="u-role" value="${r.key}" ${rec.roles?.includes(r.key)?'checked':''}> ${r.label}</label>`).join('')}
     </div></div>
@@ -3036,6 +3038,7 @@ async function saveUser(id){
   rec.full_name=name; rec.username=username; rec.email=val('u-email'); rec.roles=roles;
   rec.department_id=department_id; rec.location_id=location_id;
   rec.approver1_id=val('u-app1')||null; rec.approver2_id=val('u-app2')||null;
+  rec.account_number = val('u-account');
   rec.active = id ? (document.getElementById('u-active')?.checked?1:0) : 1;
   const pwd = val('u-pwd');
   if (pwd) rec.password = pwd;                 // server hashes it (bcrypt)
