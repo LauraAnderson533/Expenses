@@ -64,9 +64,11 @@ function reportTotal(reportId) {
 }
 function notifyReport(report, stage) {
   try {
-    if (report.type !== 'expense') return; // expenses only, not credit card
     const owner = store.get('users', report.user_id);
     if (!owner) return;
+    const isCC = report.type === 'creditcard';
+    const label = isCC ? 'Credit card report' : 'Expense claim';
+    const subj = isCC ? 'Credit card report' : 'Expense';
     const approver1 = owner.approver1_id ? store.get('users', owner.approver1_id) : null;
     const approver2 = owner.approver2_id ? store.get('users', owner.approver2_id) : null;
     const money = '£' + reportTotal(report.id).toFixed(2);
@@ -78,17 +80,17 @@ function notifyReport(report, stage) {
       ['Submitted', fmtDate(report.submitted_at)],
       ['Manager approved', fmtDate(report.manager_approved_at)],
       ['Finance approved', fmtDate(report.finance_approved_at)],
-      ['Reimbursed', fmtDate(report.reimbursed_at)],
     ];
+    if (!isCC) rows.push(['Reimbursed', fmtDate(report.reimbursed_at)]);
     const table = '<table style="border-collapse:collapse;margin:8px 0">' +
       rows.map(([k, v]) => `<tr><td style="padding:3px 14px 3px 0;color:#666">${k}</td><td style="padding:3px 0"><strong>${v}</strong></td></tr>`).join('') +
       '</table>';
     let subject, intro, extra = null;
-    if (stage === 'submitted') { subject = `Expense ${ref} submitted — ${owner.full_name}`; intro = `${owner.full_name} has submitted expense claim <strong>${ref}</strong> for <strong>${money}</strong>, awaiting approval.`; extra = (approver1 || approver2 || {}).email; }
-    else if (stage === 'manager_approved') { subject = `Expense ${ref} approved by manager`; intro = `Expense claim <strong>${ref}</strong> (${money}) has been approved by the manager and is awaiting finance approval.`; extra = (approver2 || {}).email; }
-    else if (stage === 'finance_approved') { subject = `Expense ${ref} approved by finance`; intro = `Expense claim <strong>${ref}</strong> (${money}) has been approved by finance and is due for reimbursement.`; extra = (approver2 || {}).email; }
+    if (stage === 'submitted') { subject = `${subj} ${ref} submitted — ${owner.full_name}`; intro = `${owner.full_name} has submitted ${label.toLowerCase()} <strong>${ref}</strong> for <strong>${money}</strong>, awaiting approval.`; extra = (approver1 || approver2 || {}).email; }
+    else if (stage === 'manager_approved') { subject = `${subj} ${ref} approved by manager`; intro = `${label} <strong>${ref}</strong> (${money}) has been approved by the manager and is awaiting finance approval.`; extra = (approver2 || {}).email; }
+    else if (stage === 'finance_approved') { subject = `${subj} ${ref} approved by finance`; intro = isCC ? `${label} <strong>${ref}</strong> (${money}) has been fully approved.` : `Expense claim <strong>${ref}</strong> (${money}) has been approved by finance and is due for reimbursement.`; extra = (approver2 || {}).email; }
     else if (stage === 'reimbursed') { subject = `Expense ${ref} reimbursed`; intro = `Expense claim <strong>${ref}</strong> (${money}) has been reimbursed.`; }
-    else if (stage === 'rejected') { subject = `Expense ${ref} returned for changes`; intro = `Your expense claim <strong>${ref}</strong> (${money}) has been <strong>returned for changes</strong>.` + (report.rejection_note ? ` Reason: <em>${String(report.rejection_note).replace(/</g, '&lt;')}</em>` : ' Please amend it and resubmit.'); }
+    else if (stage === 'rejected') { subject = `${subj} ${ref} returned for changes`; intro = `Your ${label.toLowerCase()} <strong>${ref}</strong> (${money}) has been <strong>returned for changes</strong>.` + (report.rejection_note ? ` Reason: <em>${String(report.rejection_note).replace(/</g, '&lt;')}</em>` : ' Please amend it and resubmit.'); }
     else return;
     const html = `<div style="font-family:Segoe UI,Arial,sans-serif;font-size:14px;color:#222">
       <p>${intro}</p>${table}
